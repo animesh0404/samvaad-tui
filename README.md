@@ -72,6 +72,11 @@ Other useful commands:
 ./gradlew installDist   # lays out build/install/samvaad-tui/bin/samvaad-tui
 ```
 
+Packaging: `build/libs/*.jar` declares `Main-Class: com.samvaad.tui.Main`
+but is a thin JAR (runtime dependencies stay external — no fat JAR).
+The Gradle application distribution (`installDist`/`distZip`/`distTar`)
+is the primary V1 distribution mechanism.
+
 With a server running, a full Phase-2 run looks like:
 
 ```text

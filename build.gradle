@@ -33,6 +33,12 @@ tasks.withType(JavaCompile).configureEach {
     options.release = 25
 }
 
+tasks.named('jar', Jar) {
+    manifest {
+        attributes('Main-Class': application.mainClass)
+    }
+}
+
 tasks.named('run', JavaExec) {
     standardInput = System.in
 }

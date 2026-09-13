@@ -33,6 +33,18 @@ Create the install distribution:
 ./gradlew installDist
 ```
 
+## Packaging
+
+The `jar` task declares `Main-Class: com.samvaad.tui.Main`, so the built
+JAR carries a correct executable entry point. It is a thin JAR: runtime
+dependencies (picocli, Jackson) remain external, so plain `java -jar` is
+not standalone.
+
+The primary V1 distribution mechanism is the Gradle application
+distribution (`installDist`, `distZip`, `distTar`), which bundles the JAR,
+all runtime dependencies, and the `samvaad-tui` launcher. No fat/uber JAR
+(e.g. Shadow) is used.
+
 ## CLI behavior
 
 Usage:
