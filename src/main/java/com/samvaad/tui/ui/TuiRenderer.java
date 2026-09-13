@@ -1,0 +1,170 @@
+package com.samvaad.tui.ui;
+
+import com.googlecode.lanterna.SGR;
+import com.googlecode.lanterna.Symbols;
+import com.googlecode.lanterna.TerminalPosition;
+import com.googlecode.lanterna.TerminalSize;
+import com.googlecode.lanterna.graphics.TextGraphics;
+import com.googlecode.lanterna.screen.Screen;
+import java.util.List;
+
+/**
+ * Draws the whole TUI shell on every input event: header, conversation
+ * sidebar, chat panel, composer, status line, and the help overlay.
+ */
+public final class TuiRenderer {
+
+    static final int MIN_COLUMNS = 50;
+    static final int MIN_ROWS = 12;
+
+    private static final String STATUS_HINTS =
+            "Up/Down select - Tab focus - Enter open - ? help - F10 quit";
+
+    public void render(Screen screen, TuiState state, String username, String serverUrl) {
+        TerminalSize size = screen.getTerminalSize();
+        int cols = size.getColumns();
+        int rows = size.getRows();
+        TextGraphics tg = screen.newTextGraphics();
+        if (cols < MIN_COLUMNS || rows < MIN_ROWS) {
+            tg.fill(' ');
+            tg.putString(0, 0, "Terminal too small - need at least "
+                    + MIN_COLUMNS + "x" + MIN_ROWS + ".");
+            return;
+        }
+        drawHeader(tg, cols, username, serverUrl);
+        int panelTop = 1;
+        int panelBottom = rows - 3;
+        int sideWidth = Math.max(20, Math.min(30, cols / 3));
+        List<ConversationView> conversations = PreviewInbox.conversations();
+        drawSidebar(tg, state, conversations, sideWidth, panelTop, panelBottom);
+        drawChat(tg, state, conversations, sideWidth, cols, panelTop, panelBottom);
+        drawComposer(tg, screen, state, cols, rows - 2);
+        drawStatus(tg, state, cols, rows - 1);
+        if (state.helpVisible()) {
+            drawHelp(tg, cols, rows);
+        }
+    }
+
+    private void drawHeader(TextGraphics tg, int cols, String username, String serverUrl) {
+        String left = " Samvaad";
+        String right = username + " @ " + serverUrl + " ";
+        int gap = cols - left.length() - right.length();
+        String line;
+        if (gap < 1) {
+            line = truncate(left.trim() + " " + right.trim(), cols);
+        } else {
+            line = left + " ".repeat(gap) + right;
+        }
+        tg.putString(0, 0, padRight(line, cols), SGR.REVERSE);
+    }
+
+    private void drawSidebar(TextGraphics tg, TuiState state,
+            List<ConversationView> conversations, int width, int top, int bottom) {
+        drawBox(tg, 0, top, width, bottom - top + 1, " Conversations ");
+        for (int i = 0; i < conversations.size(); i++) {
+            int row = top + 1 + i;
+            if (row >= bottom) {
+                break;
+            }
+            boolean selected = i == state.selectedIndex();
+            String entry = (selected ? "> " : "  ") + conversations.get(i).title();
+            entry = truncate(entry, width - 2);
+            if (selected) {
+                tg.putString(1, row, padRight(entry, width - 2), SGR.REVERSE);
+            } else {
+                tg.putString(1, row, padRight(entry, width - 2));
+            }
+        }
+    }
+
+    private void drawChat(TextGraphics tg, TuiState state, List<ConversationView> conversations,
+            int left, int cols, int top, int bottom) {
+        int width = cols - left;
+        String title = conversations.isEmpty()
+                ? " Conversation "
+                : " " + conversations.get(Math.min(state.selectedIndex(), conversations.size() - 1)).title() + " ";
+        drawBox(tg, left, top, width, bottom - top + 1, title);
+        if (!conversations.isEmpty()) {
+            int index = Math.min(state.selectedIndex(), conversations.size() - 1);
+            List<ChatMessageView> messages = PreviewInbox.messagesFor(conversations.get(index).id());
+            int row = top + 1;
+            for (ChatMessageView message : messages) {
+                if (row >= bottom - 1) {
+                    break;
+                }
+                tg.putString(left + 1, row++, truncate(message.sender() + ": " + message.text(), width - 2));
+            }
+            tg.putString(left + 1, bottom - 1,
+                    truncate("Preview data - live conversations arrive in Phase 4.", width - 2));
+        }
+    }
+
+    private void drawComposer(TextGraphics tg, Screen screen, TuiState state, int cols, int row) {
+        String prompt = "> ";
+        tg.putString(0, row, prompt);
+        int maxLen = cols - prompt.length() - 1;
+        String buffer = state.composer();
+        String visible = buffer.length() > maxLen ? buffer.substring(buffer.length() - maxLen) : buffer;
+        tg.putString(prompt.length(), row, padRight(visible, maxLen));
+        screen.setCursorPosition(new TerminalPosition(prompt.length() + visible.length(), row));
+    }
+
+    private void drawStatus(TextGraphics tg, TuiState state, int cols, int row) {
+        String text = state.status().isEmpty() ? STATUS_HINTS : state.status();
+        tg.putString(0, row, padRight(truncate(text, cols), cols), SGR.REVERSE);
+    }
+
+    private void drawHelp(TextGraphics tg, int cols, int rows) {
+        List<String> lines = List.of(
+                "Help",
+                "",
+                "Up/Down or k/j  Select conversation",
+                "Tab             Move focus (list / composer)",
+                "Enter           Open conversation / composer notice",
+                "F1 or ?         Toggle this help",
+                "Esc             Close help",
+                "F10, Ctrl+C     Quit (q quits in the list)",
+                "",
+                "Messaging, history and friends arrive in",
+                "later phases - this is a preview shell.");
+        int width = 48;
+        int height = lines.size() + 2;
+        int left = Math.max(0, (cols - width) / 2);
+        int top = Math.max(0, (rows - height) / 2);
+        tg.fillRectangle(new TerminalPosition(left, top), new TerminalSize(width, height), ' ');
+        drawBox(tg, left, top, width, height, " Help ");
+        for (int i = 0; i < lines.size(); i++) {
+            tg.putString(left + 2, top + 1 + i, truncate(lines.get(i), width - 4));
+        }
+    }
+
+    private void drawBox(TextGraphics tg, int left, int top, int width, int height, String title) {
+        int right = left + width - 1;
+        int bottom = top + height - 1;
+        tg.setCharacter(left, top, Symbols.SINGLE_LINE_TOP_LEFT_CORNER);
+        tg.setCharacter(right, top, Symbols.SINGLE_LINE_TOP_RIGHT_CORNER);
+        tg.setCharacter(left, bottom, Symbols.SINGLE_LINE_BOTTOM_LEFT_CORNER);
+        tg.setCharacter(right, bottom, Symbols.SINGLE_LINE_BOTTOM_RIGHT_CORNER);
+        tg.drawLine(left + 1, top, right - 1, top, Symbols.SINGLE_LINE_HORIZONTAL);
+        tg.drawLine(left + 1, bottom, right - 1, bottom, Symbols.SINGLE_LINE_HORIZONTAL);
+        tg.drawLine(left, top + 1, left, bottom - 1, Symbols.SINGLE_LINE_VERTICAL);
+        tg.drawLine(right, top + 1, right, bottom - 1, Symbols.SINGLE_LINE_VERTICAL);
+        if (title != null && !title.isEmpty() && title.length() < width - 2) {
+            tg.putString(left + 1, top, title);
+        }
+    }
+
+    static String truncate(String text, int max) {
+        if (text.length() <= max) {
+            return text;
+        }
+        return text.substring(0, Math.max(0, max));
+    }
+
+    static String padRight(String text, int width) {
+        if (text.length() >= width) {
+            return text;
+        }
+        return text + " ".repeat(width - text.length());
+    }
+}

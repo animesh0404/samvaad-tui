@@ -15,7 +15,8 @@ class SamvaadTuiCommandTest {
 
     private static SamvaadTuiCommand parse(String... args) {
         SamvaadTuiCommand command = new SamvaadTuiCommand(
-                new AppBootstrap(new NoopConsoleIO(), new AuthApiClient(new UnusedTransport())));
+                new AppBootstrap(new NoopConsoleIO(), new AuthApiClient(new UnusedTransport()),
+                        (username, serverUrl) -> { }));
         new CommandLine(command).parseArgs(args);
         return command;
     }

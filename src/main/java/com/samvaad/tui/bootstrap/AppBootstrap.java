@@ -9,22 +9,25 @@ import com.samvaad.tui.config.AppConfig;
 import com.samvaad.tui.config.AppConfigResolver;
 import com.samvaad.tui.session.AuthSession;
 import com.samvaad.tui.session.SessionState;
+import com.samvaad.tui.ui.TuiException;
+import com.samvaad.tui.ui.TuiLauncher;
 import java.util.Arrays;
 import java.util.Objects;
 
 /**
- * Phase 2 startup flow: resolve config, log in against the Samvaad Server,
- * print a sanitized summary, revoke the server session via logout, and
- * clear all local secrets before exiting.
+ * Phase 3 startup flow: resolve config, log in, enter the fullscreen TUI,
+ * then revoke the server session via logout and clear all local secrets.
  */
 public final class AppBootstrap {
 
     private final ConsoleIO io;
     private final AuthApiClient authApi;
+    private final TuiLauncher tui;
 
-    public AppBootstrap(ConsoleIO io, AuthApiClient authApi) {
+    public AppBootstrap(ConsoleIO io, AuthApiClient authApi, TuiLauncher tui) {
         this.io = Objects.requireNonNull(io, "io");
         this.authApi = Objects.requireNonNull(authApi, "authApi");
+        this.tui = Objects.requireNonNull(tui, "tui");
     }
 
     public int run(CliOptions options) {
@@ -59,6 +62,13 @@ public final class AppBootstrap {
         System.out.println("Username: " + session.config().username());
         System.out.println("Session: " + auth.sessionId());
         System.out.println("Authenticated: yes (expires in " + auth.expiresInSeconds() + " seconds)");
+        int tuiExit = 0;
+        try {
+            tui.launch(config.username(), config.serverUrl());
+        } catch (TuiException e) {
+            System.err.println("Error: " + e.getMessage());
+            tuiExit = 1;
+        }
         try {
             authApi.logout(config.serverUrl(), auth.accessToken());
             System.out.println("Logged out. Server session revoked.");
@@ -67,6 +77,6 @@ public final class AppBootstrap {
         } finally {
             session = session.cleared();
         }
-        return 0;
+        return tuiExit;
     }
 }
