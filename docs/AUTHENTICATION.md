@@ -85,3 +85,7 @@ The same authenticated session/JWT is intended for future realtime use.
 ## Current limitations
 
 Authentication currently has no persistent credentials, persistent tokens, background refresh, multi-account storage, offline authentication, or device/installation identity generation. Phase 3 adds the TUI shell after authentication but does not add new authentication endpoints or realtime behavior.
+
+The Phase 3 UI hardening does not alter authentication behavior. The TUI
+still receives display context only, and server logout/revocation remains
+owned by bootstrap and the server contract.
