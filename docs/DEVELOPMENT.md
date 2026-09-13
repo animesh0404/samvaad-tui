@@ -47,13 +47,20 @@ all runtime dependencies, and the `samvaad-tui` launcher. No fat/uber JAR
 
 ## TUI development
 
-Phase 3 uses Lanterna `3.1.5` for the fullscreen shell. The shell is intentionally separated from transport code:
+Phase 3 established the Lanterna `3.1.5` fullscreen shell. Phase 4 keeps the
+same UI boundary but replaces preview data with server-backed conversation and
+message state.
 
-- `TuiApp` owns terminal lifecycle and render/input loop.
+Responsibilities:
+
+- `TuiApp` owns terminal lifecycle, render/input loop, and lazy history-load worker creation.
 - `TuiController` owns keyboard-to-state transitions.
 - `TuiRenderer` owns terminal presentation.
 - `TuiLauncher` is the bootstrap seam.
-- `PreviewInbox` supplies temporary in-memory display data only.
+- `TuiSession` is a token-free bundle of UI display context, conversation state, and history-loading behavior.
+- `ConversationStore` owns in-memory server-backed conversation/message presentation state and preserves server ordering.
+- `ConversationApiClient` owns the verified conversation/history HTTP reads.
+- `MessageHistoryLoader` keeps the UI's history-loading operation behind a small seam for testing.
 
 Current bindings:
 
@@ -74,8 +81,17 @@ clears stale interior characters through normal frame rendering, handles
 resize-triggered full redraws, and derives Help geometry from content with
 symmetric padding and narrow-terminal clamping.
 
-The Phase 3 shell does not call conversation, messaging, realtime, friend,
-or search APIs. Preview data must not be treated as server state.
+Phase 4 conversation/history behavior:
+
+- conversation list comes from `GET /api/conversations/direct?limit&offset`;
+- server-provided conversation order is preserved verbatim;
+- selecting a conversation triggers initial history loading with `afterSequence=0&limit=20`;
+- history HTTP runs on a daemon worker so the UI thread remains responsive;
+- messages are displayed in server-provided ascending sequence order;
+- `lastSequenceNumber` is retained as the server high-water mark while `highestLoadedSequence` tracks locally loaded messages separately;
+- no load-more UI is implemented yet;
+- loading, empty, and error states are rendered explicitly;
+- no message sending, realtime, friends/search, or friend-request APIs are called in Phase 4.
 
 ## CLI behavior
 
@@ -93,12 +109,14 @@ Current flow:
 2. resolve username
 3. collect password
 4. call login
-5. establish in-memory authenticated session
-6. enter the fullscreen TUI shell
-7. exit the TUI
-8. call server logout
-9. clear local session state
-10. exit
+5. establish in-memory authenticated session and user id from JWT `sub`
+6. load the server conversation list
+7. enter the fullscreen TUI shell
+8. lazily load selected conversation history
+9. exit the TUI
+10. call server logout
+11. clear local session state
+12. exit
 
 Exit codes:
 
@@ -108,17 +126,15 @@ Exit codes:
 
 ## Testing approach
 
-API tests use the `HttpTransport` seam and a fake transport rather than requiring a running server. Session tests cover authentication state and token replacement/session behavior. TUI state/controller tests exercise keyboard bindings, and renderer tests use a virtual terminal where practical.
+API tests use the `HttpTransport` seam and a fake transport rather than requiring a running server. Conversation API tests verify exact paths/query parameters, JSON parsing including nullable participant usernames and `LocalDateTime`, malformed responses, transport failures, and 400/401/403/404 mappings. Session tests cover authentication state, token replacement, and authenticated user-id handling. Model tests cover server-order preservation and the distinction between server high-water marks and locally loaded sequence. TUI state/controller tests exercise keyboard bindings and history-loading transitions, and renderer tests use a virtual terminal where practical.
 
-A live server smoke test can be used for end-to-end authentication and TUI lifecycle verification. Use disposable test data and never commit credentials or tokens.
+A live server smoke test can be used for end-to-end authentication, server-backed conversation/history loading, logout/revocation, and terminal lifecycle verification. Use disposable test data and never commit credentials or tokens.
 
-The current Phase 3 baseline has 67 automated tests passing, including
-regressions for help input handling, overlay repaint/ghost prevention,
-resize behavior, and Help geometry/content visibility.
+The current Phase 4 baseline has **106 automated tests passing**. The Phase 3 renderer/input regressions remain covered as part of that suite.
 
 ## Dependency policy
 
-Keep the client dependency footprint small. Current primary runtime dependencies are picocli, Jackson, and Lanterna. JUnit is test-only. Do not introduce a server framework or persistence technology to solve a client concern without a concrete requirement.
+Keep the client dependency footprint small. Current primary runtime dependencies are picocli, Jackson (including `jackson-datatype-jsr310` for server `LocalDateTime`), and Lanterna. JUnit is test-only. Do not introduce a server framework or persistence technology to solve a client concern without a concrete requirement.
 
 WebSocket/STOMP dependencies belong to a future implementation phase and should be introduced only when realtime capability is actually implemented.
 
