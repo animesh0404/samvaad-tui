@@ -17,7 +17,9 @@ final class FakeConsoleIO implements ConsoleIO {
     }
 
     void setPassword(char[] password) {
-        this.password = password.clone();
+        // Stores the reference (no copy) so tests can assert that
+        // callers clear it after use.
+        this.password = password;
     }
 
     String lastPasswordPrompt() {
@@ -35,6 +37,8 @@ final class FakeConsoleIO implements ConsoleIO {
     @Override
     public char[] readPassword(String prompt) {
         lastPasswordPrompt = prompt;
-        return password.clone();
+        // Deliberately returns the live array so tests can assert
+        // that callers clear it after use.
+        return password;
     }
 }

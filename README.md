@@ -72,6 +72,14 @@ Other useful commands:
 ./gradlew installDist   # lays out build/install/samvaad-tui/bin/samvaad-tui
 ```
 
+With a server running, a full Phase-2 run looks like:
+
+```text
+./gradlew run --args="--server http://localhost:8080 --username alice"
+# prompts for password, logs in, prints a sanitized summary,
+# revokes the server session via logout, clears local secrets, exits 0
+```
+
 ## CLI usage
 
 ```text
@@ -80,7 +88,39 @@ samvaad-tui --help
 samvaad-tui --version
 ```
 
-Exit codes: `0` success, `2` usage/validation error.
+Exit codes: `0` success, `1` authentication/server failure, `2` usage/validation error.
+
+## Authentication contract (verified, server-authoritative)
+
+Base API URL is the configured server URL. The client implements exactly
+these endpoints and no others:
+
+* Login: `POST /api/auth/login`
+  ```json
+  {
+    "identifier": "<username>",
+    "password": "<password>",
+    "installationId": null,
+    "clientPlatform": "TUI",
+    "clientName": "samvaad-tui",
+    "clientVersion": "0.1.0"
+  }
+  ```
+  `installationId` is optional server metadata — this client always sends
+  null and never generates one. `identifier` is the username from the CLI.
+* Login response: `{ "accessToken", "refreshToken", "expiresIn", "sessionId" }`.
+* Refresh: `POST /api/auth/refresh` with `{ "refreshToken" }`; response has
+  the same shape as login. The client replaces its tokens with the latest
+  server-issued pair; there is no background refresh yet.
+* Logout: `POST /api/auth/logout` with `Authorization: Bearer <accessToken>`;
+  the server revokes the persisted session. Logout is always a server call,
+  never just local cleanup.
+
+JWT/session facts: `sub` = userId, `sid` = sessionId; the same session is
+used for HTTP and realtime. The client never persists credentials or tokens
+to disk; passwords are `char[]` cleared after the request; tokens live in
+memory only and are never logged or printed (only server, username,
+session id, and expiry appear in output).
 
 ## Architecture
 
@@ -118,18 +158,22 @@ Rules:
 
 ## Current implementation status
 
-**Phase 1 — Foundation: done.**
+**Phase 1 — Foundation: done** (commit `57c51cd`).
 
-- Java 25 + Gradle (Groovy DSL) + wrapper `9.7.1`.
-- Entry point `com.samvaad.tui.Main`, picocli command, `--server`/`--username`.
-- Interactive prompts for missing server/username; secure password prompt
-  with no-console fallback; password cleared from memory.
-- `AppConfig` / `AppConfigResolver` validation and normalization.
-- `Credentials` (`char[]` + `clear()`), `SessionState` (unauthenticated).
-- `api/realtime/model/ui` exist as documented placeholders only.
-- Unit tests (JUnit) for CLI parsing, config resolution, prompting,
-  bootstrap flow, credentials clearing, session state.
-- **No Samvaad Server calls, no authentication, no TUI yet** (by design).
+**Phase 2 — Authentication: done.**
+
+- Jackson `2.22.2` for JSON; JDK `HttpClient` for HTTP; no Spring Boot.
+- `api/`: `AuthApiClient` (login/refresh/logout per the verified contract),
+  `HttpTransport` seam + `JdkHttpTransport`, server DTOs as records,
+  `SamvaadApiException` distinguishing authentication failure,
+  server-unavailable, HTTP errors, and malformed responses.
+- `session/`: `SessionState` with authenticated state, `AuthSession`
+  (tokens, session id, expiry), token replacement after refresh,
+  full secret cleanup.
+- CLI flow is now login → authenticated session → sanitized summary →
+  server logout/revocation → local cleanup → exit. Auth failure exits `1`.
+- Unit tests use a mocked HTTP transport; no running server required.
+- **No TUI, conversations, messaging, realtime, friends, or search yet.**
 
 Planned next phases (not started):
 
