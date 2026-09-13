@@ -15,22 +15,22 @@ No system Gradle installation is required.
 ./gradlew test
 ```
 
-Run the CLI:
+For the fullscreen TUI, build the installed application distribution:
 
 ```bash
-./gradlew run --args="--server http://localhost:8080 --username alice"
+./gradlew installDist
+build/install/samvaad-tui/bin/samvaad-tui --server http://localhost:8080 --username alice
 ```
+
+The fullscreen Lanterna TUI requires a real terminal. The installed
+application launcher is the supported manual smoke-test path; `./gradlew run`
+is useful for CLI/non-interactive behavior but is not the primary way to run
+the fullscreen shell.
 
 Show CLI help:
 
 ```bash
 ./gradlew run --args="--help"
-```
-
-Create the install distribution:
-
-```bash
-./gradlew installDist
 ```
 
 ## Packaging
@@ -66,6 +66,13 @@ Esc                 close help / return focus to conversations
 F10 / Ctrl+C        quit
 q (conversation list) quit
 ```
+
+Navigation does not wrap at list boundaries. Help is an overlay, but terminal
+escape-sequence edge cases are handled so an unexpected merged key cannot
+strand the UI in the help state. The renderer paints owned cells explicitly,
+clears stale interior characters through normal frame rendering, handles
+resize-triggered full redraws, and derives Help geometry from content with
+symmetric padding and narrow-terminal clamping.
 
 The Phase 3 shell does not call conversation, messaging, realtime, friend,
 or search APIs. Preview data must not be treated as server state.
@@ -105,6 +112,10 @@ API tests use the `HttpTransport` seam and a fake transport rather than requirin
 
 A live server smoke test can be used for end-to-end authentication and TUI lifecycle verification. Use disposable test data and never commit credentials or tokens.
 
+The current Phase 3 baseline has 67 automated tests passing, including
+regressions for help input handling, overlay repaint/ghost prevention,
+resize behavior, and Help geometry/content visibility.
+
 ## Dependency policy
 
 Keep the client dependency footprint small. Current primary runtime dependencies are picocli, Jackson, and Lanterna. JUnit is test-only. Do not introduce a server framework or persistence technology to solve a client concern without a concrete requirement.
@@ -120,9 +131,10 @@ For each phase:
 3. implement the client behavior
 4. run tests/build
 5. inspect the actual implementation
-6. reconcile documentation
-7. update the root `README.md` as part of the same documentation gate
-8. commit and push
-9. verify the repository state
+6. perform manual smoke verification where applicable
+7. reconcile documentation
+8. update the root `README.md` as part of the same documentation gate
+9. commit and push
+10. verify the repository state
 
 The root README is part of the primary project documentation, not a separate afterthought.
