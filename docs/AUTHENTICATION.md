@@ -33,6 +33,8 @@ The server returns `accessToken`, `refreshToken`, `expiresIn`, and `sessionId`.
 
 `AuthResponse` represents that response and `AuthSession` represents the authenticated session in memory.
 
+The server-defined JWT contract has `sub = userId` and `sid = sessionId`. Phase 4 decodes the access-token payload's `sub` claim to obtain the authenticated user id for local sender attribution. The client does not perform JWT signature verification; authentication validity remains the server's responsibility.
+
 ## Session state
 
 `SessionState` has authenticated and unauthenticated states. An authenticated state contains an `AuthSession`.
@@ -42,6 +44,7 @@ The server returns `accessToken`, `refreshToken`, `expiresIn`, and `sessionId`.
 - access token
 - refresh token
 - session ID
+- authenticated user id derived from JWT `sub`
 - expiry duration
 - acquisition timestamp
 
@@ -63,15 +66,22 @@ Logout uses `POST /api/auth/logout` with `Authorization: Bearer <access-token>`.
 
 After successful login, the TUI shell runs with display context only; access and refresh tokens remain in the session/bootstrap layer. Exiting the TUI returns control to bootstrap, which calls server logout and then clears local authenticated state. Local cleanup is therefore not a substitute for server logout.
 
-## HTTP authentication
+## Conversation/history HTTP authentication
 
-Authenticated HTTP calls use:
+Phase 4 conversation and message-history requests also use:
 
 ```text
 Authorization: Bearer <access-token>
 ```
 
 The same authenticated session/JWT is intended for future realtime use.
+
+The TUI consumes only the verified server reads:
+
+- `GET /api/conversations/direct?limit&offset`
+- `GET /api/conversations/direct/{conversationId}/messages?afterSequence&limit`
+
+The UI receives display context and client-side state, not the raw token.
 
 ## Security rules
 
@@ -81,11 +91,8 @@ The same authenticated session/JWT is intended for future realtime use.
 - Access and refresh tokens are held in memory only.
 - Credentials and tokens are not persisted locally.
 - The Lanterna UI must not receive or render authentication tokens.
+- Decoding the JWT `sub` claim is only for local sender attribution; it is not an authentication decision.
 
 ## Current limitations
 
-Authentication currently has no persistent credentials, persistent tokens, background refresh, multi-account storage, offline authentication, or device/installation identity generation. Phase 3 adds the TUI shell after authentication but does not add new authentication endpoints or realtime behavior.
-
-The Phase 3 UI hardening does not alter authentication behavior. The TUI
-still receives display context only, and server logout/revocation remains
-owned by bootstrap and the server contract.
+Authentication currently has no persistent credentials, persistent tokens, background refresh, multi-account storage, offline authentication, or device/installation identity generation. Phase 4 adds authenticated conversation/history reads and local sender attribution but does not add new authentication endpoints, token persistence, or realtime behavior.
