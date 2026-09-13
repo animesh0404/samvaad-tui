@@ -22,27 +22,29 @@ The TUI owns terminal interaction, client-side presentation state, session state
 ## Current package responsibilities
 
 - `cli` — picocli command-line entry points and command handling.
-- `bootstrap` — startup orchestration, console prompting, authentication, and TUI lifecycle orchestration.
+- `bootstrap` — startup orchestration, console prompting, authentication, conversation loading, and TUI lifecycle orchestration.
 - `config` — application configuration and resolution.
-- `auth` — authentication credential handling.
+- `auth` — authentication credential handling and decoding the server-issued JWT `sub` for authenticated-user display attribution.
 - `api` — HTTP transport, API clients, exceptions, and server DTOs.
-- `session` — authenticated client session state.
+- `session` — authenticated client session state, including the authenticated user id derived from the server-issued JWT.
 - `realtime` — reserved for future WebSocket/STOMP integration.
-- `model` — reserved for future client-side application state.
-- `ui` — Lanterna terminal rendering, navigation, interaction, and terminal lifecycle.
+- `model` — server-backed conversation and message presentation state for the TUI lifetime.
+- `ui` — Lanterna terminal rendering, navigation, interaction, terminal lifecycle, and the history-loading seam.
 
 The UI must not construct HTTP requests or STOMP frames directly.
 
 ## TUI shell architecture
 
-Phase 3 introduces a deliberately small UI boundary:
+Phase 3 established the Lanterna UI boundary. Phase 4 replaces the preview data with server-backed state:
 
 ```text
 AppBootstrap
     |
-    +--> AuthApiClient --> Samvaad Server
+    +--> AuthApiClient -------------> Samvaad Server
     |
-    +--> TuiLauncher
+    +--> ConversationApiClient ----> Samvaad Server
+    |
+    +--> TuiSession
              |
              v
           TuiApp
@@ -51,12 +53,18 @@ AppBootstrap
       |             |
    TuiState     Lanterna Screen
       |
- PreviewInbox (temporary in-memory display data)
+ ConversationStore
+   /          \
+conversations  messagesByConversation
 ```
 
-`TuiLauncher` is the bootstrap-facing seam. `TuiApp` owns terminal lifecycle and the render/input loop. `TuiController` translates key strokes into state transitions. `TuiRenderer` renders only client-side display state. The UI receives username/server display context, not access or refresh tokens.
+`TuiLauncher` is the bootstrap-facing seam. `TuiApp` owns terminal lifecycle and the render/input loop. `TuiController` translates key strokes into state transitions. `TuiRenderer` renders only client-side display state. `TuiSession` provides the UI with display context, the server-backed conversation store, and a history-loading seam; raw access/refresh tokens remain outside the UI.
 
-The Phase 3 preview inbox is explicitly non-authoritative and exists only to exercise navigation and presentation before real conversation contracts are integrated.
+`ConversationApiClient` implements only the verified conversation-list and message-history reads. There is no single-conversation lookup endpoint in the server contract, and Phase 4 does not invent one.
+
+`ConversationStore` preserves the server-provided conversation order and message sequence order. It deliberately separates the server-provided `lastSequenceNumber` high-water mark from `highestLoadedSequence`, which records what the client has actually loaded locally. This distinction is important for the future realtime phase.
+
+History loading is initiated lazily when a conversation is first selected. `TuiApp` runs the HTTP call on a daemon worker so the terminal render/input loop is not blocked. Loading, loaded-empty, and error states remain client-side presentation state; server data remains authoritative.
 
 The renderer authoritatively paints cells within its owned regions, including
 interior spaces, so stale characters are not left behind when overlays close
@@ -67,9 +75,20 @@ edge cases so an unexpected merged key cannot strand the UI in the help state.
 
 ## Current HTTP architecture
 
-`AuthApiClient` depends on `HttpTransport`. `JdkHttpTransport` implements that boundary using `java.net.http.HttpClient`. Jackson handles JSON serialization/deserialization.
+`AuthApiClient` and `ConversationApiClient` depend on `HttpTransport`. `JdkHttpTransport` implements that boundary using `java.net.http.HttpClient`. Jackson handles JSON serialization/deserialization, including Java `LocalDateTime` values returned by the server.
 
-This keeps protocol mechanics out of command/bootstrap code and provides a small seam for unit testing API behavior without a live server.
+The conversation API client exposes the exact verified reads:
+
+```text
+GET /api/conversations/direct?limit&offset
+GET /api/conversations/direct/{conversationId}/messages?afterSequence&limit
+```
+
+Conversation paging is offset-based. Message history uses the server's sequence cursor: only messages with `sequenceNumber > afterSequence` are returned, in ascending sequence order. Phase 4 loads the initial history with `afterSequence=0&limit=20`; no load-more UI is added yet.
+
+The API layer preserves server ordering and does not perform client-side timestamp sorting. Server timestamps are zone-less `LocalDateTime` values and are displayed without timezone conversion.
+
+This keeps protocol mechanics out of command/UI code and provides a small seam for unit testing API behavior without a live server.
 
 ## Authentication/session flow
 
@@ -79,10 +98,15 @@ CLI
   -> AuthApiClient
   -> POST /api/auth/login
   <- accessToken + refreshToken + expiresIn + sessionId
-  -> AuthSession
+  -> AuthSession(userId derived from JWT sub)
   -> SessionState(AUTHENTICATED)
-  -> TuiLauncher
+  -> ConversationApiClient
+  -> conversation list
+  -> TuiSession
   -> fullscreen TUI
+  -> selected conversation
+  -> ConversationApiClient via history loader
+  -> message history
   -> exit
   -> AuthApiClient
   -> POST /api/auth/logout
@@ -93,17 +117,21 @@ Logout remains outside the TUI presentation layer and is server-authoritative.
 
 ## Session model
 
-`SessionState` represents authenticated versus unauthenticated client state. `AuthSession` contains the server-issued access token, refresh token, session ID, expiry duration, and acquisition timestamp.
+`SessionState` represents authenticated versus unauthenticated client state. `AuthSession` contains the server-issued access token, refresh token, session ID, expiry duration, acquisition timestamp, and authenticated user id derived from the JWT `sub` claim.
+
+The client only decodes the JWT payload to obtain the server-defined user id for local sender attribution. It does not perform client-side JWT signature verification; authentication validity remains a server responsibility.
 
 Authentication state is currently in memory only. There is no local token database or credential store.
 
 ## Error handling
 
-The API layer must avoid exposing credentials or sensitive response bodies. Authentication/runtime failures are surfaced to the CLI as failure status `1`; usage/validation failures use status `2`. TUI failures are translated by bootstrap into a runtime failure while server logout still runs.
+The API layer must avoid exposing credentials or sensitive response bodies. Authentication/runtime failures are surfaced to the CLI as failure status `1`; usage/validation failures use status `2`. TUI history failures are translated into explicit loading/error states while server logout still runs.
+
+Conversation/history HTTP errors remain typed by the existing `SamvaadApiException` taxonomy. In particular, 401 is authentication failure; 400/403/404 remain HTTP errors with their status codes; malformed JSON is a malformed-response error; transport failures are server-unavailable errors.
 
 ## Future realtime boundary
 
-The existing server exposes WebSocket/STOMP contracts. When realtime is implemented, the authenticated access JWT will be used and the protocol implementation will remain behind the `realtime` boundary. No realtime implementation is part of the current TUI shell.
+The existing server exposes WebSocket/STOMP contracts. When realtime is implemented, the authenticated access JWT will be used and the protocol implementation will remain behind the `realtime` boundary. The Phase 4 conversation store's distinction between server high-water mark and locally loaded sequence is intentionally compatible with a future realtime message stream.
 
 ## Design principles
 
@@ -115,3 +143,4 @@ The existing server exposes WebSocket/STOMP contracts. When realtime is implemen
 6. UI independent of transport implementation.
 7. Implement only against verified server contracts.
 8. Keep terminal lifecycle and presentation concerns inside the UI boundary.
+9. Preserve server ordering and sequencing semantics rather than recreating them client-side.
