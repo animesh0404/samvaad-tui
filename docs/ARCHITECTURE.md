@@ -1,0 +1,83 @@
+# Architecture
+
+## Purpose
+
+`samvaad-tui` is a thin terminal client for the existing Samvaad Server. The server remains authoritative for authentication, authorization, business rules, persistence, domain state, sequencing, idempotency, and other server-owned behavior.
+
+## Boundaries
+
+```text
++----------------------+       HTTP / realtime       +----------------------+
+|     samvaad-tui      | --------------------------> |   Samvaad Server     |
+|                      |                             |                      |
+| CLI / TUI            |                             | Auth / Authz          |
+| client state         |                             | Domain rules          |
+| presentation         |                             | Persistence           |
+| API clients          |                             | Realtime contracts    |
++----------------------+                             +----------------------+
+```
+
+The TUI owns terminal interaction, client-side presentation state, session state, transport adaptation, and invocation of server contracts. It must not duplicate server business logic or invent undocumented endpoints/payloads.
+
+## Current package responsibilities
+
+- `cli` — picocli command-line entry points and command handling.
+- `bootstrap` — startup orchestration and console prompting.
+- `config` — application configuration and resolution.
+- `auth` — authentication credential handling.
+- `api` — HTTP transport, API clients, exceptions, and server DTOs.
+- `session` — authenticated client session state.
+- `realtime` — reserved for future WebSocket/STOMP integration.
+- `model` — reserved for future client-side application state.
+- `ui` — reserved for the future Lanterna terminal UI.
+
+The UI must not construct HTTP requests or STOMP frames directly.
+
+## Current HTTP architecture
+
+`AuthApiClient` depends on `HttpTransport`. `JdkHttpTransport` implements that boundary using `java.net.http.HttpClient`. Jackson handles JSON serialization/deserialization.
+
+This keeps protocol mechanics out of command/bootstrap code and provides a small seam for unit testing API behavior without a live server.
+
+## Authentication/session flow
+
+```text
+CLI
+  -> credentials
+  -> AuthApiClient
+  -> POST /api/auth/login
+  <- accessToken + refreshToken + expiresIn + sessionId
+  -> AuthSession
+  -> SessionState(AUTHENTICATED)
+```
+
+Logout is server-authoritative:
+
+```text
+CLI -> AuthApiClient -> POST /api/auth/logout -> server revokes session
+                                             -> local SessionState cleared
+```
+
+## Session model
+
+`SessionState` represents authenticated versus unauthenticated client state. `AuthSession` contains the server-issued access token, refresh token, session ID, expiry duration, and acquisition timestamp.
+
+Authentication state is currently in memory only. There is no local token database or credential store.
+
+## Error handling
+
+The API layer must avoid exposing credentials or sensitive response bodies. Authentication/runtime failures are surfaced to the CLI as failure status `1`; usage/validation failures use status `2`.
+
+## Future realtime boundary
+
+The existing server exposes WebSocket/STOMP contracts. When realtime is implemented, the authenticated access JWT will be used and the protocol implementation will remain behind the `realtime` boundary. No realtime implementation is currently part of the client.
+
+## Design principles
+
+1. Server authority over client duplication.
+2. Explicit boundaries over framework-heavy abstraction.
+3. Small, intentional client-side state.
+4. In-memory authentication state until a concrete persistence requirement exists.
+5. Protocol details isolated inside API/realtime layers.
+6. UI independent of transport implementation.
+7. Implement only against verified server contracts.
