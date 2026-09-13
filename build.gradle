@@ -1,0 +1,41 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'com.samvaad.tui'
+version = '0.1.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'info.picocli:picocli:4.7.7'
+    testImplementation platform('org.junit:junit-bom:6.1.3')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+application {
+    mainClass = 'com.samvaad.tui.Main'
+    applicationName = 'samvaad-tui'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+}
+
+tasks.named('run', JavaExec) {
+    standardInput = System.in
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
