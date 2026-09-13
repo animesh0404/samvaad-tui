@@ -58,6 +58,13 @@ AppBootstrap
 
 The Phase 3 preview inbox is explicitly non-authoritative and exists only to exercise navigation and presentation before real conversation contracts are integrated.
 
+The renderer authoritatively paints cells within its owned regions, including
+interior spaces, so stale characters are not left behind when overlays close
+or content changes. Help geometry is derived from content, padded, and safely
+clamped to terminal dimensions. Resize events trigger Lanterna's normal
+full-redraw path. Help input handling also accounts for terminal escape-sequence
+edge cases so an unexpected merged key cannot strand the UI in the help state.
+
 ## Current HTTP architecture
 
 `AuthApiClient` depends on `HttpTransport`. `JdkHttpTransport` implements that boundary using `java.net.http.HttpClient`. Jackson handles JSON serialization/deserialization.
