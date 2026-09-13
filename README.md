@@ -46,15 +46,15 @@ rather than guessing.
 
 ## Run
 
-```text
-./gradlew run --args="--server http://localhost:8080 --username alice"
-```
-
-Expected invocation once installed:
+For the fullscreen TUI, use the installed application distribution:
 
 ```text
-samvaad-tui --server http://localhost:8080 --username alice
+./gradlew installDist
+build/install/samvaad-tui/bin/samvaad-tui --server http://localhost:8080 --username alice
 ```
+
+The Gradle `run` task is useful for CLI/non-interactive behavior, but the
+fullscreen Lanterna TUI requires the installed launcher with a real terminal.
 
 Behavior:
 
@@ -89,12 +89,15 @@ Current shell capabilities:
 
 - full-screen alternate-terminal UI with header, conversation sidebar, chat panel, composer, and status line;
 - Up/Down or `k`/`j` conversation navigation;
+- navigation does not wrap at the list boundaries;
 - `Tab` focus switching;
 - `Enter` selection/composer interaction (message sending remains future work);
 - `F1` or `?` help overlay;
 - `Esc` closes help/unfocuses the composer;
 - `F10`, `Ctrl+C`, or `q` from the conversation list exits;
 - terminal cleanup/restoration on normal and Ctrl+C exits;
+- Help overlay handles rapid/merged terminal key input without stranding the UI;
+- Help overlay redraws cleanly and derives its width from content with terminal-size clamping and padding;
 - authenticated server logout remains outside the UI and is performed by bootstrap.
 
 Phase 3 does **not** implement conversation APIs, message history, sending,
@@ -171,18 +174,21 @@ Rules:
 
 **Phase 2 — Authentication and session management: done** (commit `241e285`).
 
-**Phase 3 — TUI shell: done** (commit `595b355`).
+**Phase 3 — TUI shell: done** (implementation commit `595b355`; subsequent
+Phase 3 fixes `42e7f29`).
 
-Implemented in Phase 3:
+Implemented and smoke-tested in the Phase 3 line:
 
 - Lanterna `3.1.5`.
 - Full-screen terminal lifecycle and restoration.
 - Sidebar/chat/header/composer/status layout.
 - Keyboard navigation and help overlay.
 - In-memory preview inbox, explicitly marked as preview data.
+- Robust help input handling for terminal escape-sequence edge cases.
+- Clean renderer redraws, resize handling, and content-derived Help geometry/padding.
 - TUI receives display data only; authentication tokens remain outside the UI.
 - Logout/revocation remains server-authoritative.
-- 60 automated tests passing at phase completion.
+- 67 automated tests passing at the current Phase 3 baseline.
 
 Next phases will be defined incrementally after the relevant Samvaad Server
 contracts are verified. Expected areas include conversation list/history,
