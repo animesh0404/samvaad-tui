@@ -9,7 +9,8 @@ import java.util.List;
  *
  * <p>Bindings: Up/Down or k/j select, Tab moves focus, Enter opens the
  * highlighted conversation or (in the composer) shows the Phase 5 notice,
- * F1 or '?' toggles help, Esc closes help, F10 / Ctrl+C / 'q' in the list
+ * F1 or '?' toggles help, Esc closes help, any other key dismisses the
+ * help overlay and is processed normally, F10 / Ctrl+C / 'q' in the list
  * quits. Typing otherwise edits the composer when it is focused.
  */
 public final class TuiController {
@@ -24,17 +25,19 @@ public final class TuiController {
             return Action.CONTINUE;
         }
         if (state.helpVisible()) {
+            if (key.getKeyType() == KeyType.F10) {
+                state.closeHelp();
+                return Action.QUIT;
+            }
             if (key.getKeyType() == KeyType.Escape
                     || key.getKeyType() == KeyType.F1
-                    || isCharacter(key, '?')
-                    || key.getKeyType() == KeyType.F10) {
+                    || isCharacter(key, '?')) {
                 state.closeHelp();
-                if (key.getKeyType() == KeyType.F10) {
-                    return Action.QUIT;
-                }
                 return Action.CONTINUE;
             }
-            return Action.CONTINUE;
+            // Any other key dismisses the overlay and is then processed
+            // normally, so no input is ever swallowed while help is open.
+            state.closeHelp();
         }
         if (key.getKeyType() == KeyType.F10 || isCtrlC(key)) {
             return Action.QUIT;

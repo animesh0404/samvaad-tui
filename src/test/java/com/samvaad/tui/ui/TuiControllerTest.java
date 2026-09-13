@@ -84,6 +84,56 @@ class TuiControllerTest {
     }
 
     @Test
+    void anyOtherKeyDismissesHelpAndActsNormally() {
+        TuiState tabState = new TuiState();
+        tabState.toggleHelp();
+        controller.handle(key(KeyType.Tab), tabState, conversations);
+        assertTrue(!tabState.helpVisible(), "help must close");
+        assertEquals(TuiState.Focus.COMPOSER, tabState.focus(), "Tab must still toggle focus");
+
+        TuiState arrowState = new TuiState();
+        arrowState.toggleHelp();
+        controller.handle(key(KeyType.ArrowDown), arrowState, conversations);
+        assertTrue(!arrowState.helpVisible(), "help must close");
+        assertEquals(1, arrowState.selectedIndex(), "arrow must still move selection");
+
+        TuiState quitState = new TuiState();
+        quitState.toggleHelp();
+        assertEquals(TuiController.Action.QUIT,
+                controller.handle(ch('q'), quitState, conversations),
+                "q with help open must quit, not swallow");
+        assertTrue(!quitState.helpVisible());
+    }
+
+    @Test
+    void f10QuitsWithHelpOpen() {
+        TuiState state = new TuiState();
+        state.toggleHelp();
+        assertEquals(TuiController.Action.QUIT,
+                controller.handle(key(KeyType.F10), state, conversations));
+        assertTrue(!state.helpVisible());
+    }
+
+    @Test
+    void mergedAltKeysAreIgnoredButNeverStrandHelpOpen() {
+        // Rapid Esc+X bursts arrive from Lanterna as a single Alt-modified
+        // keystroke (verified against the decoder). They carry no binding,
+        // but with help open they must still dismiss the overlay.
+        TuiState helpState = new TuiState();
+        helpState.toggleHelp();
+        assertEquals(TuiController.Action.CONTINUE,
+                controller.handle(new KeyStroke('\t', false, true), helpState, conversations));
+        assertTrue(!helpState.helpVisible(), "merged Esc+Tab must still dismiss help");
+        assertEquals(TuiState.Focus.CONVERSATIONS, helpState.focus(),
+                "merged key itself must not act");
+
+        TuiState listState = new TuiState();
+        assertEquals(TuiController.Action.CONTINUE,
+                controller.handle(new KeyStroke('j', false, true), listState, conversations));
+        assertEquals(0, listState.selectedIndex(), "Alt+j must not move selection");
+    }
+
+    @Test
     void quitKeys() {
         assertEquals(TuiController.Action.QUIT,
                 controller.handle(key(KeyType.F10), new TuiState(), conversations));

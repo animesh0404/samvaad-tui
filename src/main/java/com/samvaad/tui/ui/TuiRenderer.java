@@ -114,10 +114,11 @@ public final class TuiRenderer {
         tg.putString(0, row, padRight(truncate(text, cols), cols), SGR.REVERSE);
     }
 
+    private static final int HELP_HORIZONTAL_PADDING = 2;
+    private static final int HELP_VERTICAL_PADDING = 1;
+
     private void drawHelp(TextGraphics tg, int cols, int rows) {
         List<String> lines = List.of(
-                "Help",
-                "",
                 "Up/Down or k/j  Select conversation",
                 "Tab             Move focus (list / composer)",
                 "Enter           Open conversation / composer notice",
@@ -127,20 +128,30 @@ public final class TuiRenderer {
                 "",
                 "Messaging, history and friends arrive in",
                 "later phases - this is a preview shell.");
-        int width = 48;
-        int height = lines.size() + 2;
+        int contentWidth = lines.stream().mapToInt(String::length).max().orElse(0);
+        int width = Math.min(cols - 2, contentWidth + HELP_HORIZONTAL_PADDING * 2 + 2);
+        // Only pad vertically when the terminal fits the padded box;
+        // on minimum-height terminals fall back to the compact layout.
+        int verticalPadding = rows >= lines.size() + 4 ? HELP_VERTICAL_PADDING : 0;
+        int height = lines.size() + 2 + verticalPadding * 2;
         int left = Math.max(0, (cols - width) / 2);
         int top = Math.max(0, (rows - height) / 2);
-        tg.fillRectangle(new TerminalPosition(left, top), new TerminalSize(width, height), ' ');
         drawBox(tg, left, top, width, height, " Help ");
         for (int i = 0; i < lines.size(); i++) {
-            tg.putString(left + 2, top + 1 + i, truncate(lines.get(i), width - 4));
+            tg.putString(left + 1 + HELP_HORIZONTAL_PADDING, top + 1 + verticalPadding + i,
+                    truncate(lines.get(i), width - 2 - HELP_HORIZONTAL_PADDING * 2));
         }
     }
 
     private void drawBox(TextGraphics tg, int left, int top, int width, int height, String title) {
         int right = left + width - 1;
         int bottom = top + height - 1;
+        // Fill the interior first so every frame authoritatively repaints
+        // every cell it owns. Without this, Lanterna's diff-based refresh
+        // leaves stale characters where new content is shorter than the
+        // previously painted content (closed overlays, other conversations).
+        tg.fillRectangle(new TerminalPosition(left + 1, top + 1),
+                new TerminalSize(width - 2, height - 2), ' ');
         tg.setCharacter(left, top, Symbols.SINGLE_LINE_TOP_LEFT_CORNER);
         tg.setCharacter(right, top, Symbols.SINGLE_LINE_TOP_RIGHT_CORNER);
         tg.setCharacter(left, bottom, Symbols.SINGLE_LINE_BOTTOM_LEFT_CORNER);
