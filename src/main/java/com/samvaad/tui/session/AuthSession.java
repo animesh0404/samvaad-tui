@@ -1,20 +1,26 @@
 package com.samvaad.tui.session;
 
 import com.samvaad.tui.api.dto.AuthResponse;
+import com.samvaad.tui.auth.JwtSubject;
+import com.samvaad.tui.config.AppConfig;
 import java.time.Instant;
+import java.util.Objects;
+import java.util.UUID;
 
 /**
  * Authenticated session material, held in memory only.
  *
  * <p>Tokens come exclusively from server authentication/refresh responses
- * and are never logged, printed, or persisted.
+ * and are never logged, printed, or persisted. The user id is the JWT
+ * {@code sub} claim decoded from the access token for sender attribution.
  */
 public record AuthSession(
         String accessToken,
         String refreshToken,
         String sessionId,
         long expiresInSeconds,
-        Instant acquiredAt) {
+        Instant acquiredAt,
+        UUID userId) {
 
     public AuthSession {
         if (isBlank(accessToken) || isBlank(refreshToken) || isBlank(sessionId)) {
@@ -26,11 +32,15 @@ public record AuthSession(
         if (acquiredAt == null) {
             throw new IllegalArgumentException("Acquisition time must not be null.");
         }
+        if (userId == null) {
+            throw new IllegalArgumentException("User id must not be null.");
+        }
     }
 
     public static AuthSession from(AuthResponse response) {
         return new AuthSession(response.accessToken(), response.refreshToken(),
-                response.sessionId(), response.expiresIn(), Instant.now());
+                response.sessionId(), response.expiresIn(), Instant.now(),
+                JwtSubject.subject(response.accessToken()));
     }
 
     public Instant expiresAt() {

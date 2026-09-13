@@ -9,9 +9,8 @@ public interface TuiLauncher {
     /**
      * Enters the fullscreen TUI and returns after a clean exit.
      *
-     * @param username authenticated username for the header
-     * @param serverUrl server base URL for the header
+     * @param session token-free session view for the UI
      * @throws TuiException when the terminal cannot be used
      */
-    void launch(String username, String serverUrl);
+    void launch(TuiSession session);
 }

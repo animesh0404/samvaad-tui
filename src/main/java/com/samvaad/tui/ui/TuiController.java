@@ -2,6 +2,7 @@ package com.samvaad.tui.ui;
 
 import com.googlecode.lanterna.input.KeyStroke;
 import com.googlecode.lanterna.input.KeyType;
+import com.samvaad.tui.model.ConversationEntry;
 import java.util.List;
 
 /**
@@ -20,7 +21,7 @@ public final class TuiController {
         QUIT
     }
 
-    public Action handle(KeyStroke key, TuiState state, List<ConversationView> conversations) {
+    public Action handle(KeyStroke key, TuiState state, List<ConversationEntry> conversations) {
         if (key == null) {
             return Action.CONTINUE;
         }
@@ -60,7 +61,7 @@ public final class TuiController {
         return handleComposerKeys(key, state);
     }
 
-    private Action handleConversationKeys(KeyStroke key, TuiState state, List<ConversationView> conversations) {
+    private Action handleConversationKeys(KeyStroke key, TuiState state, List<ConversationEntry> conversations) {
         int count = conversations.size();
         if (key.getKeyType() == KeyType.ArrowUp || isCharacter(key, 'k')) {
             state.selectUp(count);
@@ -79,7 +80,7 @@ public final class TuiController {
         }
         if (key.getKeyType() == KeyType.Enter && !conversations.isEmpty()) {
             int index = Math.min(state.selectedIndex(), count - 1);
-            state.setStatus("Opened " + conversations.get(index).title() + " (preview).");
+            state.setStatus("Opened " + conversations.get(index).displayName() + ".");
             return Action.CONTINUE;
         }
         return Action.CONTINUE;

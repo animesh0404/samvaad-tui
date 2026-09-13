@@ -1,6 +1,7 @@
 package com.samvaad.tui;
 
 import com.samvaad.tui.api.AuthApiClient;
+import com.samvaad.tui.api.ConversationApiClient;
 import com.samvaad.tui.api.JdkHttpTransport;
 import com.samvaad.tui.bootstrap.AppBootstrap;
 import com.samvaad.tui.bootstrap.SystemConsoleIO;
@@ -11,8 +12,8 @@ import picocli.CommandLine;
 /**
  * Application entry point for the Samvaad TUI client.
  *
- * <p>Phase 3: CLI bootstrap, server authentication, and the fullscreen
- * Lanterna TUI shell. No conversation APIs yet.
+ * <p>Phase 4: CLI bootstrap, server authentication, server-backed
+ * conversations and message history in the fullscreen TUI.
  */
 public final class Main {
 
@@ -20,8 +21,12 @@ public final class Main {
     }
 
     public static void main(String[] args) {
+        JdkHttpTransport transport = new JdkHttpTransport();
         AppBootstrap bootstrap = new AppBootstrap(
-                new SystemConsoleIO(), new AuthApiClient(new JdkHttpTransport()), new TuiApp());
+                new SystemConsoleIO(),
+                new AuthApiClient(transport),
+                new ConversationApiClient(transport),
+                new TuiApp());
         SamvaadTuiCommand command = new SamvaadTuiCommand(bootstrap);
         int exitCode = new CommandLine(command).execute(args);
         System.exit(exitCode);

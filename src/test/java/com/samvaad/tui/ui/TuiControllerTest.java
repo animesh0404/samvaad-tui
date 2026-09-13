@@ -5,13 +5,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.googlecode.lanterna.input.KeyStroke;
 import com.googlecode.lanterna.input.KeyType;
+import com.samvaad.tui.model.ConversationEntry;
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class TuiControllerTest {
 
     private final TuiController controller = new TuiController();
-    private final List<ConversationView> conversations = PreviewInbox.conversations();
+
+    private static ConversationEntry entry(String id, String username) {
+        return new ConversationEntry(UUID.fromString(id), UUID.randomUUID(), username, 1,
+                LocalDateTime.of(2026, 9, 14, 10, 0));
+    }
+
+    private final List<ConversationEntry> conversations = List.of(
+            entry("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "alice"),
+            entry("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "bob"),
+            entry("cccccccc-cccc-cccc-cccc-cccccccccccc", "charlie"));
 
     private static KeyStroke key(KeyType type) {
         return new KeyStroke(type);
@@ -154,7 +166,7 @@ class TuiControllerTest {
     void enterOpensConversationOrShowsComposerNotice() {
         TuiState listState = new TuiState();
         controller.handle(key(KeyType.Enter), listState, conversations);
-        assertTrue(listState.status().contains("Alice"));
+        assertTrue(listState.status().contains("alice"));
 
         TuiState composerState = new TuiState();
         composerState.toggleFocus();

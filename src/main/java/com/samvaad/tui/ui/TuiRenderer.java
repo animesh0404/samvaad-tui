@@ -6,11 +6,17 @@ import com.googlecode.lanterna.TerminalPosition;
 import com.googlecode.lanterna.TerminalSize;
 import com.googlecode.lanterna.graphics.TextGraphics;
 import com.googlecode.lanterna.screen.Screen;
+import com.samvaad.tui.model.ConversationEntry;
+import com.samvaad.tui.model.ConversationStore;
+import com.samvaad.tui.model.MessageEntry;
 import java.util.List;
 
 /**
  * Draws the whole TUI shell on every input event: header, conversation
  * sidebar, chat panel, composer, status line, and the help overlay.
+ *
+ * <p>Renders server-backed state exactly as held: conversation order and
+ * message order are never re-sorted here.
  */
 public final class TuiRenderer {
 
@@ -20,7 +26,8 @@ public final class TuiRenderer {
     private static final String STATUS_HINTS =
             "Up/Down select - Tab focus - Enter open - ? help - F10 quit";
 
-    public void render(Screen screen, TuiState state, String username, String serverUrl) {
+    public void render(Screen screen, TuiState state, ConversationStore store,
+            String username, String serverUrl) {
         TerminalSize size = screen.getTerminalSize();
         int cols = size.getColumns();
         int rows = size.getRows();
@@ -35,9 +42,9 @@ public final class TuiRenderer {
         int panelTop = 1;
         int panelBottom = rows - 3;
         int sideWidth = Math.max(20, Math.min(30, cols / 3));
-        List<ConversationView> conversations = PreviewInbox.conversations();
+        List<ConversationEntry> conversations = store.conversations();
         drawSidebar(tg, state, conversations, sideWidth, panelTop, panelBottom);
-        drawChat(tg, state, conversations, sideWidth, cols, panelTop, panelBottom);
+        drawChat(tg, state, store, conversations, sideWidth, cols, panelTop, panelBottom);
         drawComposer(tg, screen, state, cols, rows - 2);
         drawStatus(tg, state, cols, rows - 1);
         if (state.helpVisible()) {
@@ -59,15 +66,19 @@ public final class TuiRenderer {
     }
 
     private void drawSidebar(TextGraphics tg, TuiState state,
-            List<ConversationView> conversations, int width, int top, int bottom) {
+            List<ConversationEntry> conversations, int width, int top, int bottom) {
         drawBox(tg, 0, top, width, bottom - top + 1, " Conversations ");
+        if (conversations.isEmpty()) {
+            tg.putString(1, top + 1, truncate("  (no conversations)", width - 2));
+            return;
+        }
         for (int i = 0; i < conversations.size(); i++) {
             int row = top + 1 + i;
             if (row >= bottom) {
                 break;
             }
             boolean selected = i == state.selectedIndex();
-            String entry = (selected ? "> " : "  ") + conversations.get(i).title();
+            String entry = (selected ? "> " : "  ") + conversations.get(i).displayName();
             entry = truncate(entry, width - 2);
             if (selected) {
                 tg.putString(1, row, padRight(entry, width - 2), SGR.REVERSE);
@@ -77,26 +88,50 @@ public final class TuiRenderer {
         }
     }
 
-    private void drawChat(TextGraphics tg, TuiState state, List<ConversationView> conversations,
-            int left, int cols, int top, int bottom) {
+    private void drawChat(TextGraphics tg, TuiState state, ConversationStore store,
+            List<ConversationEntry> conversations, int left, int cols, int top, int bottom) {
         int width = cols - left;
-        String title = conversations.isEmpty()
-                ? " Conversation "
-                : " " + conversations.get(Math.min(state.selectedIndex(), conversations.size() - 1)).title() + " ";
-        drawBox(tg, left, top, width, bottom - top + 1, title);
-        if (!conversations.isEmpty()) {
-            int index = Math.min(state.selectedIndex(), conversations.size() - 1);
-            List<ChatMessageView> messages = PreviewInbox.messagesFor(conversations.get(index).id());
-            int row = top + 1;
-            for (ChatMessageView message : messages) {
-                if (row >= bottom - 1) {
-                    break;
-                }
-                tg.putString(left + 1, row++, truncate(message.sender() + ": " + message.text(), width - 2));
-            }
-            tg.putString(left + 1, bottom - 1,
-                    truncate("Preview data - live conversations arrive in Phase 4.", width - 2));
+        if (conversations.isEmpty()) {
+            drawBox(tg, left, top, width, bottom - top + 1, " Conversation ");
+            tg.putString(left + 1, top + 1, truncate("No conversations yet.", width - 2));
+            return;
         }
+        int index = Math.min(state.selectedIndex(), conversations.size() - 1);
+        ConversationEntry conversation = conversations.get(index);
+        drawBox(tg, left, top, width, bottom - top + 1, " " + conversation.displayName() + " ");
+        switch (store.statusOf(conversation.conversationId())) {
+            case NOT_LOADED, LOADING ->
+                tg.putString(left + 1, top + 1, truncate("Loading history...", width - 2));
+            case ERROR -> {
+                String error = store.errorOf(conversation.conversationId());
+                tg.putString(left + 1, top + 1,
+                        truncate(error != null ? error : "Could not load history.", width - 2));
+            }
+            case LOADED -> {
+                List<MessageEntry> messages = store.messagesOf(conversation.conversationId());
+                if (messages.isEmpty()) {
+                    tg.putString(left + 1, top + 1, truncate("No messages yet.", width - 2));
+                    return;
+                }
+                int row = top + 1;
+                for (MessageEntry message : messages) {
+                    if (row >= bottom) {
+                        break;
+                    }
+                    tg.putString(left + 1, row++,
+                            truncate(senderLabel(store, conversation, message) + ": "
+                                    + message.content(), width - 2));
+                }
+            }
+        }
+    }
+
+    private static String senderLabel(
+            ConversationStore store, ConversationEntry conversation, MessageEntry message) {
+        if (message.senderUserId().equals(store.currentUserId())) {
+            return "You";
+        }
+        return conversation.displayName();
     }
 
     private void drawComposer(TextGraphics tg, Screen screen, TuiState state, int cols, int row) {
@@ -126,8 +161,8 @@ public final class TuiRenderer {
                 "Esc             Close help",
                 "F10, Ctrl+C     Quit (q quits in the list)",
                 "",
-                "Messaging, history and friends arrive in",
-                "later phases - this is a preview shell.");
+                "Message sending and friends arrive in",
+                "later phases.");
         int contentWidth = lines.stream().mapToInt(String::length).max().orElse(0);
         int width = Math.min(cols - 2, contentWidth + HELP_HORIZONTAL_PADDING * 2 + 2);
         // Only pad vertically when the terminal fits the padded box;

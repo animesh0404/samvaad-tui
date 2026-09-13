@@ -41,4 +41,13 @@ public final class FakeHttpTransport implements HttpTransport {
         }
         return queued.removeFirst();
     }
+
+    @Override
+    public HttpResult get(String baseUrl, String pathAndQuery, String bearerToken) {
+        calls.add(new Call(baseUrl, pathAndQuery, null, bearerToken));
+        if (queued.isEmpty()) {
+            throw new IllegalStateException("No queued result for GET " + pathAndQuery);
+        }
+        return queued.removeFirst();
+    }
 }

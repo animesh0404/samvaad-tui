@@ -1,32 +1,46 @@
 package com.samvaad.tui.bootstrap;
 
 import com.samvaad.tui.api.AuthApiClient;
+import com.samvaad.tui.api.ConversationApiClient;
 import com.samvaad.tui.api.SamvaadApiException;
 import com.samvaad.tui.api.dto.AuthResponse;
+import com.samvaad.tui.api.dto.ConversationResponse;
+import com.samvaad.tui.api.dto.MessageResponse;
 import com.samvaad.tui.auth.Credentials;
 import com.samvaad.tui.cli.CliOptions;
 import com.samvaad.tui.config.AppConfig;
 import com.samvaad.tui.config.AppConfigResolver;
+import com.samvaad.tui.model.ConversationEntry;
+import com.samvaad.tui.model.ConversationStore;
+import com.samvaad.tui.model.MessageEntry;
 import com.samvaad.tui.session.AuthSession;
 import com.samvaad.tui.session.SessionState;
 import com.samvaad.tui.ui.TuiException;
 import com.samvaad.tui.ui.TuiLauncher;
+import com.samvaad.tui.ui.TuiSession;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
- * Phase 3 startup flow: resolve config, log in, enter the fullscreen TUI,
+ * Phase 4 startup flow: resolve config, log in, load the server
+ * conversation list, enter the fullscreen TUI with server-backed state,
  * then revoke the server session via logout and clear all local secrets.
  */
 public final class AppBootstrap {
 
     private final ConsoleIO io;
     private final AuthApiClient authApi;
+    private final ConversationApiClient conversationsApi;
     private final TuiLauncher tui;
 
-    public AppBootstrap(ConsoleIO io, AuthApiClient authApi, TuiLauncher tui) {
+    public AppBootstrap(
+            ConsoleIO io, AuthApiClient authApi, ConversationApiClient conversationsApi, TuiLauncher tui) {
         this.io = Objects.requireNonNull(io, "io");
         this.authApi = Objects.requireNonNull(authApi, "authApi");
+        this.conversationsApi = Objects.requireNonNull(conversationsApi, "conversationsApi");
         this.tui = Objects.requireNonNull(tui, "tui");
     }
 
@@ -45,10 +59,12 @@ public final class AppBootstrap {
 
         char[] password = prompter.promptPassword();
         Credentials credentials = new Credentials(config.username(), password);
-        AuthResponse response;
+        AuthSession auth;
         try {
-            response = authApi.login(config.serverUrl(), credentials.username(), credentials.password());
-        } catch (SamvaadApiException e) {
+            AuthResponse response =
+                    authApi.login(config.serverUrl(), credentials.username(), credentials.password());
+            auth = AuthSession.from(response);
+        } catch (SamvaadApiException | IllegalArgumentException e) {
             System.err.println("Error: " + e.getMessage());
             return 1;
         } finally {
@@ -56,15 +72,28 @@ public final class AppBootstrap {
             Arrays.fill(password, '\0');
         }
 
-        SessionState session = SessionState.authenticated(config, AuthSession.from(response));
-        AuthSession auth = session.authSession().orElseThrow();
+        SessionState session = SessionState.authenticated(config, auth);
         System.out.println("Server: " + session.config().serverUrl());
         System.out.println("Username: " + session.config().username());
         System.out.println("Session: " + auth.sessionId());
         System.out.println("Authenticated: yes (expires in " + auth.expiresInSeconds() + " seconds)");
+
+        List<ConversationEntry> entries;
+        try {
+            entries = loadConversations(config.serverUrl(), auth.accessToken());
+        } catch (SamvaadApiException | IllegalArgumentException e) {
+            System.err.println("Error: " + e.getMessage());
+            revokeQuietly(config.serverUrl(), auth.accessToken());
+            session = session.cleared();
+            return 1;
+        }
+        ConversationStore store = new ConversationStore(auth.userId(), entries);
+        TuiSession tuiSession = new TuiSession(config.username(), config.serverUrl(), store,
+                (conversationId, afterSequence, limit) -> loadHistory(
+                        config.serverUrl(), auth.accessToken(), conversationId, afterSequence, limit));
         int tuiExit = 0;
         try {
-            tui.launch(config.username(), config.serverUrl());
+            tui.launch(tuiSession);
         } catch (TuiException e) {
             System.err.println("Error: " + e.getMessage());
             tuiExit = 1;
@@ -78,5 +107,43 @@ public final class AppBootstrap {
             session = session.cleared();
         }
         return tuiExit;
+    }
+
+    private List<ConversationEntry> loadConversations(String serverUrl, String accessToken) {
+        List<ConversationResponse> responses =
+                conversationsApi.listDirectConversations(serverUrl, accessToken);
+        List<ConversationEntry> entries = new ArrayList<>(responses.size());
+        for (ConversationResponse response : responses) {
+            entries.add(new ConversationEntry(
+                    response.conversationId(),
+                    response.otherParticipantUserId(),
+                    response.otherParticipantUsername(),
+                    response.lastSequenceNumber(),
+                    response.updatedAt()));
+        }
+        return entries;
+    }
+
+    private List<MessageEntry> loadHistory(String serverUrl, String accessToken,
+            UUID conversationId, long afterSequence, int limit) {
+        List<MessageResponse> responses = conversationsApi.getMessageHistory(
+                serverUrl, accessToken, conversationId, afterSequence, limit);
+        List<MessageEntry> entries = new ArrayList<>(responses.size());
+        for (MessageResponse response : responses) {
+            entries.add(new MessageEntry(
+                    response.senderUserId(),
+                    response.sequenceNumber(),
+                    response.content(),
+                    response.serverTimestamp()));
+        }
+        return entries;
+    }
+
+    private void revokeQuietly(String serverUrl, String accessToken) {
+        try {
+            authApi.logout(serverUrl, accessToken);
+        } catch (SamvaadApiException ignored) {
+            // Best effort: the session may already be unusable.
+        }
     }
 }

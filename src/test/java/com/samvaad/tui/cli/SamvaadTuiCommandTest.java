@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 import com.samvaad.tui.api.AuthApiClient;
+import com.samvaad.tui.api.ConversationApiClient;
 import com.samvaad.tui.api.HttpResult;
 import com.samvaad.tui.api.HttpTransport;
 import com.samvaad.tui.bootstrap.AppBootstrap;
@@ -16,7 +17,7 @@ class SamvaadTuiCommandTest {
     private static SamvaadTuiCommand parse(String... args) {
         SamvaadTuiCommand command = new SamvaadTuiCommand(
                 new AppBootstrap(new NoopConsoleIO(), new AuthApiClient(new UnusedTransport()),
-                        (username, serverUrl) -> { }));
+                        new ConversationApiClient(new UnusedTransport()), (session) -> { }));
         new CommandLine(command).parseArgs(args);
         return command;
     }
@@ -50,6 +51,11 @@ class SamvaadTuiCommandTest {
     private static final class UnusedTransport implements HttpTransport {
         @Override
         public HttpResult post(String baseUrl, String path, String jsonBody, String bearerToken) {
+            throw new UnsupportedOperationException("no HTTP in CLI parsing tests");
+        }
+
+        @Override
+        public HttpResult get(String baseUrl, String pathAndQuery, String bearerToken) {
             throw new UnsupportedOperationException("no HTTP in CLI parsing tests");
         }
     }

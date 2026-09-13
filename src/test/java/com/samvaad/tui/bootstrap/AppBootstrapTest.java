@@ -6,36 +6,97 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.samvaad.tui.api.AuthApiClient;
+import com.samvaad.tui.api.ConversationApiClient;
 import com.samvaad.tui.api.FakeHttpTransport;
+import com.samvaad.tui.auth.TestTokens;
 import com.samvaad.tui.cli.CliOptions;
 import com.samvaad.tui.ui.TuiException;
 import com.samvaad.tui.ui.TuiLauncher;
+import com.samvaad.tui.ui.TuiSession;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class AppBootstrapTest {
 
-    private static final String AUTH_JSON =
-            "{\"accessToken\":\"access-1\",\"refreshToken\":\"refresh-1\",\"expiresIn\":3600,\"sessionId\":\"sid-1\"}";
+    private static final UUID USER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final String ACCESS = TestTokens.accessTokenFor(USER_ID);
+    private static final String AUTH_JSON = "{\"accessToken\":\"" + ACCESS + "\","
+            + "\"refreshToken\":\"refresh-1\",\"expiresIn\":3600,\"sessionId\":\"sid-1\"}";
+    private static final String LIST_JSON = "[{\"conversationId\":"
+            + "\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\","
+            + "\"otherParticipantUserId\":\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\","
+            + "\"otherParticipantUsername\":\"bob\","
+            + "\"lastSequenceNumber\":3,"
+            + "\"updatedAt\":\"2026-09-14T10:15:30\"}]";
+
+    private static AppBootstrap bootstrap(
+            FakeConsoleIO io, FakeHttpTransport transport, TuiLauncher tui) {
+        return new AppBootstrap(io, new AuthApiClient(transport),
+                new ConversationApiClient(transport), tui);
+    }
+
+    private static void queueLoginListLogout(FakeHttpTransport transport) {
+        transport.addJson(200, AUTH_JSON);
+        transport.addJson(200, LIST_JSON);
+        transport.addJson(200, "");
+    }
 
     @Test
-    void loginLogoutFlowReturnsZero() {
+    void loginListAndLogoutFlowReturnsZero() {
+        FakeConsoleIO io = new FakeConsoleIO();
+        io.setPassword("s3cret".toCharArray());
+        FakeHttpTransport transport = new FakeHttpTransport();
+        queueLoginListLogout(transport);
+
+        int exit = bootstrap(io, transport, (session) -> { }).run(
+                new CliOptions("http://localhost:8080", "alice"));
+
+        assertEquals(0, exit);
+        assertEquals(3, transport.calls().size());
+        assertEquals("/api/auth/login", transport.calls().get(0).path());
+        assertEquals("/api/conversations/direct?limit=20&offset=0", transport.calls().get(1).path());
+        assertEquals("/api/auth/logout", transport.calls().get(2).path());
+    }
+
+    @Test
+    void launchesTuiWithServerBackedState() {
+        FakeConsoleIO io = new FakeConsoleIO();
+        io.setPassword("s3cret".toCharArray());
+        FakeHttpTransport transport = new FakeHttpTransport();
+        queueLoginListLogout(transport);
+        RecordingTui tui = new RecordingTui();
+
+        int exit = bootstrap(io, transport, tui).run(
+                new CliOptions("http://localhost:8080", "alice"));
+
+        assertEquals(0, exit);
+        assertEquals("alice", tui.session.username());
+        assertEquals("http://localhost:8080", tui.session.serverUrl());
+        assertEquals(USER_ID, tui.session.store().currentUserId());
+        assertEquals(1, tui.session.store().conversations().size());
+        assertEquals("bob", tui.session.store().conversations().get(0).displayName());
+        assertEquals(3, tui.session.store().conversations().get(0).lastSequenceNumber());
+    }
+
+    @Test
+    void emptyListStillLaunchesTui() {
         FakeConsoleIO io = new FakeConsoleIO();
         io.setPassword("s3cret".toCharArray());
         FakeHttpTransport transport = new FakeHttpTransport();
         transport.addJson(200, AUTH_JSON);
+        transport.addJson(200, "[]");
         transport.addJson(200, "");
+        RecordingTui tui = new RecordingTui();
 
-        int exit = new AppBootstrap(io, new AuthApiClient(transport), (username, serverUrl) -> { }).run(
+        int exit = bootstrap(io, transport, tui).run(
                 new CliOptions("http://localhost:8080", "alice"));
 
         assertEquals(0, exit);
-        assertEquals(2, transport.calls().size());
-        assertEquals("/api/auth/login", transport.calls().get(0).path());
-        assertEquals("/api/auth/logout", transport.calls().get(1).path());
-        assertEquals("access-1", transport.calls().get(1).bearerToken());
+        assertTrue(tui.session.store().conversations().isEmpty());
+        assertEquals("/api/auth/logout", transport.calls().get(2).path());
     }
 
     @Test
@@ -45,10 +106,9 @@ class AppBootstrapTest {
         io.addLine("alice");
         io.setPassword("s3cret".toCharArray());
         FakeHttpTransport transport = new FakeHttpTransport();
-        transport.addJson(200, AUTH_JSON);
-        transport.addJson(200, "");
+        queueLoginListLogout(transport);
 
-        int exit = new AppBootstrap(io, new AuthApiClient(transport), (username, serverUrl) -> { }).run(new CliOptions(null, null));
+        int exit = bootstrap(io, transport, (session) -> { }).run(new CliOptions(null, null));
 
         assertEquals(0, exit);
     }
@@ -59,7 +119,7 @@ class AppBootstrapTest {
         io.setPassword("s3cret".toCharArray());
         FakeHttpTransport transport = new FakeHttpTransport();
 
-        int exit = new AppBootstrap(io, new AuthApiClient(transport), (username, serverUrl) -> { }).run(
+        int exit = bootstrap(io, transport, (session) -> { }).run(
                 new CliOptions("localhost:8080", "alice"));
 
         assertEquals(2, exit);
@@ -71,20 +131,39 @@ class AppBootstrapTest {
         FakeConsoleIO io = new FakeConsoleIO();
         io.setPassword("wrong".toCharArray());
         FakeHttpTransport transport = new FakeHttpTransport();
-        transport.addJson(401, "{\"error\":\"unauthorized\"}");
+        transport.addJson(401, "{\"message\":\"unauthorized\"}");
 
-        int exit = new AppBootstrap(io, new AuthApiClient(transport), (username, serverUrl) -> { }).run(
+        int exit = bootstrap(io, transport, (session) -> { }).run(
                 new CliOptions("http://localhost:8080", "alice"));
 
         assertEquals(1, exit);
-        assertEquals(1, transport.calls().size(), "logout must not run after failed login");
+        assertEquals(1, transport.calls().size(), "nothing must run after failed login");
+    }
+
+    @Test
+    void returnsOneWhenConversationListFails() {
+        FakeConsoleIO io = new FakeConsoleIO();
+        io.setPassword("s3cret".toCharArray());
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, AUTH_JSON);
+        transport.addJson(500, "boom");
+        transport.addJson(200, "");
+        RecordingTui tui = new RecordingTui();
+
+        int exit = bootstrap(io, transport, tui).run(
+                new CliOptions("http://localhost:8080", "alice"));
+
+        assertEquals(1, exit);
+        assertTrue(tui.session == null, "TUI must not launch without conversations");
+        assertEquals(3, transport.calls().size(), "server session must still be revoked");
+        assertEquals("/api/auth/logout", transport.calls().get(2).path());
     }
 
     @Test
     void returnsTwoWhenInputEnds() {
         FakeHttpTransport transport = new FakeHttpTransport();
 
-        int exit = new AppBootstrap(new FakeConsoleIO(), new AuthApiClient(transport), (username, serverUrl) -> { })
+        int exit = bootstrap(new FakeConsoleIO(), transport, (session) -> { })
                 .run(new CliOptions(null, null));
 
         assertEquals(2, exit);
@@ -96,10 +175,9 @@ class AppBootstrapTest {
         char[] password = "s3cret".toCharArray();
         io.setPassword(password);
         FakeHttpTransport transport = new FakeHttpTransport();
-        transport.addJson(200, AUTH_JSON);
-        transport.addJson(200, "");
+        queueLoginListLogout(transport);
 
-        new AppBootstrap(io, new AuthApiClient(transport), (username, serverUrl) -> { }).run(
+        bootstrap(io, transport, (session) -> { }).run(
                 new CliOptions("http://localhost:8080", "alice"));
 
         assertArrayEquals(new char[]{'\0', '\0', '\0', '\0', '\0', '\0'}, password);
@@ -111,53 +189,13 @@ class AppBootstrapTest {
         io.setPassword("s3cret".toCharArray());
         FakeHttpTransport transport = new FakeHttpTransport();
         transport.addJson(200, AUTH_JSON);
+        transport.addJson(200, LIST_JSON);
         transport.addJson(500, "boom");
 
-        int exit = new AppBootstrap(io, new AuthApiClient(transport), (username, serverUrl) -> { }).run(
+        int exit = bootstrap(io, transport, (session) -> { }).run(
                 new CliOptions("http://localhost:8080", "alice"));
 
         assertEquals(0, exit);
-    }
-
-    @Test
-    void neverPrintsSecrets() {
-        FakeConsoleIO io = new FakeConsoleIO();
-        io.setPassword("SENTINEL-PW".toCharArray());
-        FakeHttpTransport transport = new FakeHttpTransport();
-        transport.addJson(200,
-                "{\"accessToken\":\"SENTINEL-ACCESS\",\"refreshToken\":\"SENTINEL-REFRESH\","
-                        + "\"expiresIn\":3600,\"sessionId\":\"sid-1\"}");
-        transport.addJson(200, "");
-
-        String output = runCaptured(
-                () -> new AppBootstrap(io, new AuthApiClient(transport), (username, serverUrl) -> { }).run(
-                        new CliOptions("http://localhost:8080", "alice")));
-
-        assertFalse(output.contains("SENTINEL-PW"), "password must never be printed");
-        assertFalse(output.contains("SENTINEL-ACCESS"), "access token must never be printed");
-        assertFalse(output.contains("SENTINEL-REFRESH"), "refresh token must never be printed");
-        assertTrue(output.contains("alice"), "username summary must be printed");
-        assertTrue(output.contains("sid-1"), "session id summary must be printed");
-    }
-
-    @Test
-    void launchesTuiWithDisplayDataBetweenLoginAndLogout() {
-        FakeConsoleIO io = new FakeConsoleIO();
-        io.setPassword("s3cret".toCharArray());
-        FakeHttpTransport transport = new FakeHttpTransport();
-        transport.addJson(200, AUTH_JSON);
-        transport.addJson(200, "");
-        RecordingTui tui = new RecordingTui();
-
-        int exit = new AppBootstrap(io, new AuthApiClient(transport), tui).run(
-                new CliOptions("http://localhost:8080", "alice"));
-
-        assertEquals(0, exit);
-        assertEquals("alice", tui.username);
-        assertEquals("http://localhost:8080", tui.serverUrl);
-        assertEquals(2, transport.calls().size());
-        assertEquals("/api/auth/login", transport.calls().get(0).path());
-        assertEquals("/api/auth/logout", transport.calls().get(1).path());
     }
 
     @Test
@@ -165,27 +203,44 @@ class AppBootstrapTest {
         FakeConsoleIO io = new FakeConsoleIO();
         io.setPassword("s3cret".toCharArray());
         FakeHttpTransport transport = new FakeHttpTransport();
-        transport.addJson(200, AUTH_JSON);
-        transport.addJson(200, "");
+        queueLoginListLogout(transport);
 
-        int exit = new AppBootstrap(io, new AuthApiClient(transport),
-                (username, serverUrl) -> {
-                    throw new TuiException("No terminal.");
-                }).run(new CliOptions("http://localhost:8080", "alice"));
+        int exit = bootstrap(io, transport, (session) -> {
+            throw new TuiException("No terminal.");
+        }).run(new CliOptions("http://localhost:8080", "alice"));
 
         assertEquals(1, exit);
-        assertEquals(2, transport.calls().size(), "logout must still revoke the server session");
-        assertEquals("/api/auth/logout", transport.calls().get(1).path());
+        assertEquals(3, transport.calls().size(), "logout must still revoke the server session");
+        assertEquals("/api/auth/logout", transport.calls().get(2).path());
+    }
+
+    @Test
+    void neverPrintsSecrets() {
+        FakeConsoleIO io = new FakeConsoleIO();
+        io.setPassword("SENTINEL-PW".toCharArray());
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, "{\"accessToken\":\"" + ACCESS + "\","
+                + "\"refreshToken\":\"SENTINEL-REFRESH\","
+                + "\"expiresIn\":3600,\"sessionId\":\"sid-1\"}");
+        transport.addJson(200, LIST_JSON);
+        transport.addJson(200, "");
+
+        String output = runCaptured(() -> bootstrap(io, transport, (session) -> { }).run(
+                new CliOptions("http://localhost:8080", "alice")));
+
+        assertFalse(output.contains("SENTINEL-PW"), "password must never be printed");
+        assertFalse(output.contains(ACCESS), "access token must never be printed");
+        assertFalse(output.contains("SENTINEL-REFRESH"), "refresh token must never be printed");
+        assertTrue(output.contains("alice"), "username summary must be printed");
+        assertTrue(output.contains("sid-1"), "session id summary must be printed");
     }
 
     private static final class RecordingTui implements TuiLauncher {
-        private String username;
-        private String serverUrl;
+        private TuiSession session;
 
         @Override
-        public void launch(String username, String serverUrl) {
-            this.username = username;
-            this.serverUrl = serverUrl;
+        public void launch(TuiSession session) {
+            this.session = session;
         }
     }
 
