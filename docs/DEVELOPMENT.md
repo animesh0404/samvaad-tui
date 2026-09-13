@@ -37,13 +37,38 @@ Create the install distribution:
 
 The `jar` task declares `Main-Class: com.samvaad.tui.Main`, so the built
 JAR carries a correct executable entry point. It is a thin JAR: runtime
-dependencies (picocli, Jackson) remain external, so plain `java -jar` is
-not standalone.
+dependencies (picocli, Jackson, Lanterna) remain external, so plain
+`java -jar` is not standalone.
 
 The primary V1 distribution mechanism is the Gradle application
 distribution (`installDist`, `distZip`, `distTar`), which bundles the JAR,
 all runtime dependencies, and the `samvaad-tui` launcher. No fat/uber JAR
 (e.g. Shadow) is used.
+
+## TUI development
+
+Phase 3 uses Lanterna `3.1.5` for the fullscreen shell. The shell is intentionally separated from transport code:
+
+- `TuiApp` owns terminal lifecycle and render/input loop.
+- `TuiController` owns keyboard-to-state transitions.
+- `TuiRenderer` owns terminal presentation.
+- `TuiLauncher` is the bootstrap seam.
+- `PreviewInbox` supplies temporary in-memory display data only.
+
+Current bindings:
+
+```text
+Up / Down / k / j  select conversation
+Tab                 switch focus
+Enter               open selected item / composer notice
+F1 / ?              help
+Esc                 close help / return focus to conversations
+F10 / Ctrl+C        quit
+q (conversation list) quit
+```
+
+The Phase 3 shell does not call conversation, messaging, realtime, friend,
+or search APIs. Preview data must not be treated as server state.
 
 ## CLI behavior
 
@@ -55,17 +80,18 @@ samvaad-tui [--server URL] [--username USERNAME]
 
 If server URL or username is absent, the client prompts for it. The password is collected securely through the console when available; the non-console fallback warns that input may be visible.
 
-Current Phase 2 flow:
+Current flow:
 
 1. resolve server URL
 2. resolve username
 3. collect password
 4. call login
 5. establish in-memory authenticated session
-6. print a sanitized summary
-7. call server logout
-8. clear local session state
-9. exit
+6. enter the fullscreen TUI shell
+7. exit the TUI
+8. call server logout
+9. clear local session state
+10. exit
 
 Exit codes:
 
@@ -75,15 +101,15 @@ Exit codes:
 
 ## Testing approach
 
-API tests use the `HttpTransport` seam and a fake transport rather than requiring a running server. Session tests cover authentication state and token replacement/session behavior.
+API tests use the `HttpTransport` seam and a fake transport rather than requiring a running server. Session tests cover authentication state and token replacement/session behavior. TUI state/controller tests exercise keyboard bindings, and renderer tests use a virtual terminal where practical.
 
-A live server smoke test can be used for end-to-end authentication verification. Use disposable test data and never commit credentials or tokens.
+A live server smoke test can be used for end-to-end authentication and TUI lifecycle verification. Use disposable test data and never commit credentials or tokens.
 
 ## Dependency policy
 
-Keep the client dependency footprint small. Current primary dependencies are picocli, Jackson, and JUnit. Do not introduce a server framework or persistence technology to solve a client concern without a concrete requirement.
+Keep the client dependency footprint small. Current primary runtime dependencies are picocli, Jackson, and Lanterna. JUnit is test-only. Do not introduce a server framework or persistence technology to solve a client concern without a concrete requirement.
 
-Lanterna and WebSocket/STOMP dependencies belong to future implementation phases and should be introduced only when those capabilities are actually implemented.
+WebSocket/STOMP dependencies belong to a future implementation phase and should be introduced only when realtime capability is actually implemented.
 
 ## Implementation workflow
 

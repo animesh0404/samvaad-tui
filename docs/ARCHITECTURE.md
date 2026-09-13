@@ -22,16 +22,41 @@ The TUI owns terminal interaction, client-side presentation state, session state
 ## Current package responsibilities
 
 - `cli` — picocli command-line entry points and command handling.
-- `bootstrap` — startup orchestration and console prompting.
+- `bootstrap` — startup orchestration, console prompting, authentication, and TUI lifecycle orchestration.
 - `config` — application configuration and resolution.
 - `auth` — authentication credential handling.
 - `api` — HTTP transport, API clients, exceptions, and server DTOs.
 - `session` — authenticated client session state.
 - `realtime` — reserved for future WebSocket/STOMP integration.
 - `model` — reserved for future client-side application state.
-- `ui` — reserved for the future Lanterna terminal UI.
+- `ui` — Lanterna terminal rendering, navigation, interaction, and terminal lifecycle.
 
 The UI must not construct HTTP requests or STOMP frames directly.
+
+## TUI shell architecture
+
+Phase 3 introduces a deliberately small UI boundary:
+
+```text
+AppBootstrap
+    |
+    +--> AuthApiClient --> Samvaad Server
+    |
+    +--> TuiLauncher
+             |
+             v
+          TuiApp
+          /    \
+ TuiController  TuiRenderer
+      |             |
+   TuiState     Lanterna Screen
+      |
+ PreviewInbox (temporary in-memory display data)
+```
+
+`TuiLauncher` is the bootstrap-facing seam. `TuiApp` owns terminal lifecycle and the render/input loop. `TuiController` translates key strokes into state transitions. `TuiRenderer` renders only client-side display state. The UI receives username/server display context, not access or refresh tokens.
+
+The Phase 3 preview inbox is explicitly non-authoritative and exists only to exercise navigation and presentation before real conversation contracts are integrated.
 
 ## Current HTTP architecture
 
@@ -49,14 +74,15 @@ CLI
   <- accessToken + refreshToken + expiresIn + sessionId
   -> AuthSession
   -> SessionState(AUTHENTICATED)
+  -> TuiLauncher
+  -> fullscreen TUI
+  -> exit
+  -> AuthApiClient
+  -> POST /api/auth/logout
+  -> local SessionState cleared
 ```
 
-Logout is server-authoritative:
-
-```text
-CLI -> AuthApiClient -> POST /api/auth/logout -> server revokes session
-                                             -> local SessionState cleared
-```
+Logout remains outside the TUI presentation layer and is server-authoritative.
 
 ## Session model
 
@@ -66,11 +92,11 @@ Authentication state is currently in memory only. There is no local token databa
 
 ## Error handling
 
-The API layer must avoid exposing credentials or sensitive response bodies. Authentication/runtime failures are surfaced to the CLI as failure status `1`; usage/validation failures use status `2`.
+The API layer must avoid exposing credentials or sensitive response bodies. Authentication/runtime failures are surfaced to the CLI as failure status `1`; usage/validation failures use status `2`. TUI failures are translated by bootstrap into a runtime failure while server logout still runs.
 
 ## Future realtime boundary
 
-The existing server exposes WebSocket/STOMP contracts. When realtime is implemented, the authenticated access JWT will be used and the protocol implementation will remain behind the `realtime` boundary. No realtime implementation is currently part of the client.
+The existing server exposes WebSocket/STOMP contracts. When realtime is implemented, the authenticated access JWT will be used and the protocol implementation will remain behind the `realtime` boundary. No realtime implementation is part of the current TUI shell.
 
 ## Design principles
 
@@ -81,3 +107,4 @@ The existing server exposes WebSocket/STOMP contracts. When realtime is implemen
 5. Protocol details isolated inside API/realtime layers.
 6. UI independent of transport implementation.
 7. Implement only against verified server contracts.
+8. Keep terminal lifecycle and presentation concerns inside the UI boundary.

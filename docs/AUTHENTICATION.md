@@ -61,7 +61,7 @@ A successful response replaces the current authentication session with the lates
 
 Logout uses `POST /api/auth/logout` with `Authorization: Bearer <access-token>`.
 
-The server revokes the authenticated session. After successful logout the client clears its local authenticated state. Local cleanup is therefore not a substitute for server logout.
+After successful login, the TUI shell runs with display context only; access and refresh tokens remain in the session/bootstrap layer. Exiting the TUI returns control to bootstrap, which calls server logout and then clears local authenticated state. Local cleanup is therefore not a substitute for server logout.
 
 ## HTTP authentication
 
@@ -80,7 +80,8 @@ The same authenticated session/JWT is intended for future realtime use.
 - Error handling must not expose sensitive response bodies.
 - Access and refresh tokens are held in memory only.
 - Credentials and tokens are not persisted locally.
+- The Lanterna UI must not receive or render authentication tokens.
 
 ## Current limitations
 
-Phase 2 intentionally does not include persistent credentials, persistent tokens, background refresh, multi-account storage, offline authentication, or device/installation identity generation.
+Authentication currently has no persistent credentials, persistent tokens, background refresh, multi-account storage, offline authentication, or device/installation identity generation. Phase 3 adds the TUI shell after authentication but does not add new authentication endpoints or realtime behavior.

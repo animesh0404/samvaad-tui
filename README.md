@@ -63,6 +63,8 @@ Behavior:
 - Always prompt securely for password (`System.console().readPassword()` when
   available; visible-input fallback with a warning when no console exists).
 - Password is held as `char[]`, never printed, and cleared after use.
+- After successful authentication, the client enters the full-screen Lanterna TUI.
+- Exiting the TUI logs out through the server and clears local session state.
 
 Other useful commands:
 
@@ -77,13 +79,26 @@ but is a thin JAR (runtime dependencies stay external — no fat JAR).
 The Gradle application distribution (`installDist`/`distZip`/`distTar`)
 is the primary V1 distribution mechanism.
 
-With a server running, a full Phase-2 run looks like:
+## Phase 3 TUI shell
 
-```text
-./gradlew run --args="--server http://localhost:8080 --username alice"
-# prompts for password, logs in, prints a sanitized summary,
-# revokes the server session via logout, clears local secrets, exits 0
-```
+Phase 3 adds the Lanterna-based full-screen terminal shell only. It currently
+uses clearly marked in-memory preview conversations so the UI can be exercised
+before conversation APIs are integrated.
+
+Current shell capabilities:
+
+- full-screen alternate-terminal UI with header, conversation sidebar, chat panel, composer, and status line;
+- Up/Down or `k`/`j` conversation navigation;
+- `Tab` focus switching;
+- `Enter` selection/composer interaction (message sending remains future work);
+- `F1` or `?` help overlay;
+- `Esc` closes help/unfocuses the composer;
+- `F10`, `Ctrl+C`, or `q` from the conversation list exits;
+- terminal cleanup/restoration on normal and Ctrl+C exits;
+- authenticated server logout remains outside the UI and is performed by bootstrap.
+
+Phase 3 does **not** implement conversation APIs, message history, sending,
+realtime, friend requests, or user search.
 
 ## CLI usage
 
@@ -93,7 +108,7 @@ samvaad-tui --help
 samvaad-tui --version
 ```
 
-Exit codes: `0` success, `1` authentication/server failure, `2` usage/validation error.
+Exit codes: `0` success, `1` authentication/server/runtime failure, `2` usage/validation error.
 
 ## Authentication contract (verified, server-authoritative)
 
@@ -124,8 +139,7 @@ these endpoints and no others:
 JWT/session facts: `sub` = userId, `sid` = sessionId; the same session is
 used for HTTP and realtime. The client never persists credentials or tokens
 to disk; passwords are `char[]` cleared after the request; tokens live in
-memory only and are never logged or printed (only server, username,
-session id, and expiry appear in output).
+memory only and are never logged or printed.
 
 ## Architecture
 
@@ -134,24 +148,14 @@ Simple, explicit packages under `com.samvaad.tui`:
 ```text
 cli/          application startup and command-line handling (picocli)
 bootstrap/    startup orchestration + console prompting
+api/          HTTP communication and server DTOs
 auth/         authentication/session credential holders
 session/      authenticated-session state for the app lifetime
-api/          HTTP communication and server DTOs
-realtime/     WebSocket/STOMP communication (reserved for future implementation)
-model/        client-side state (reserved for future implementation)
-ui/           Lanterna rendering/navigation/interaction (reserved for future implementation)
+realtime/     WebSocket/STOMP communication (future)
+model/        client-side state (future)
+ui/           Lanterna rendering/navigation/interaction
 config/       application configuration (AppConfig + resolver)
 ```
-
-Responsibilities:
-
-- `cli/bootstrap` → startup and command-line handling.
-- `auth/session` → authentication/session state.
-- `api` → HTTP communication and server DTOs.
-- `realtime` → future WebSocket/STOMP communication.
-- `model` → future client-side application state.
-- `ui` → future terminal rendering, navigation, and interaction.
-- `config` → application configuration.
 
 Rules:
 
@@ -159,44 +163,28 @@ Rules:
 - Server DTOs stay separate from UI state where useful.
 - Prefer immutable records for DTOs.
 - No ORM, database, SQLite, embedded server, broker, reactive framework,
-  caching, or offline sync.
+  caching, or offline sync without a concrete requirement.
 
 ## Current implementation status
 
 **Phase 1 — Foundation: done** (commit `57c51cd`).
 
-**Phase 2 — Authentication and session management: done** (commit `241e2856b3a87a8ae3d1bf1ce51eae4dde2fd0c6`).
+**Phase 2 — Authentication and session management: done** (commit `241e285`).
 
-Implemented in Phase 2:
+**Phase 3 — TUI shell: done** (commit `595b355`).
 
-- Jackson `2.22.2` for JSON.
-- JDK `java.net.http.HttpClient` for HTTP.
-- `AuthApiClient` implementing the verified server login, refresh, and logout contracts.
-- `HttpTransport` abstraction with `JdkHttpTransport`.
-- Authentication DTO records.
-- `SamvaadApiException` for API/transport/authentication failures.
-- `SessionState` and `AuthSession` for in-memory authenticated session state.
-- Access token, refresh token, session ID, expiry, and acquisition timestamp handling.
-- Token replacement after refresh.
-- TUI client identity: `clientPlatform=TUI`, `clientName=samvaad-tui`, `clientVersion=0.1.0`.
-- `installationId` is sent as `null`; the client does not manufacture an installation identity.
-- CLI login → authenticated session → sanitized summary → server logout/revocation → local cleanup.
-- Authentication failure exits with status `1`.
-- Usage/validation failures exit with status `2`.
-- Authentication tests use a mocked HTTP transport.
-- No local credential/token persistence.
-- No TUI, conversations, messaging, realtime, friends, or search has been implemented yet.
+Implemented in Phase 3:
 
-### Next
+- Lanterna `3.1.5`.
+- Full-screen terminal lifecycle and restoration.
+- Sidebar/chat/header/composer/status layout.
+- Keyboard navigation and help overlay.
+- In-memory preview inbox, explicitly marked as preview data.
+- TUI receives display data only; authentication tokens remain outside the UI.
+- Logout/revocation remains server-authoritative.
+- 60 automated tests passing at phase completion.
 
-**Phase 3 — TUI shell:** Lanterna-based full-screen terminal UI.
-
-Future phases will be defined incrementally after the relevant server contracts are verified. Expected areas include:
-
-- conversation list/history
-- direct conversations
-- messaging
-- realtime receiving
-- username search
-- friend/request workflows
-- logout/polish
+Next phases will be defined incrementally after the relevant Samvaad Server
+contracts are verified. Expected areas include conversation list/history,
+direct conversations, messaging, realtime receiving, username search, and
+friend/request workflows.
