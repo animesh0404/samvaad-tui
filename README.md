@@ -63,7 +63,10 @@ Behavior:
 - Always prompt securely for password (`System.console().readPassword()` when
   available; visible-input fallback with a warning when no console exists).
 - Password is held as `char[]`, never printed, and cleared after use.
-- After successful authentication, the client enters the full-screen Lanterna TUI.
+- After successful authentication, the client loads the server conversation list
+  and enters the full-screen Lanterna TUI.
+- Selecting a conversation lazily loads its initial message history on a worker
+  thread so HTTP does not block terminal input/rendering.
 - Exiting the TUI logs out through the server and clears local session state.
 
 Other useful commands:
@@ -81,11 +84,10 @@ is the primary V1 distribution mechanism.
 
 ## Phase 3 TUI shell
 
-Phase 3 adds the Lanterna-based full-screen terminal shell only. It currently
-uses clearly marked in-memory preview conversations so the UI can be exercised
-before conversation APIs are integrated.
+Phase 3 established the Lanterna-based full-screen terminal shell and its
+keyboard/rendering behavior.
 
-Current shell capabilities:
+Key capabilities retained from Phase 3:
 
 - full-screen alternate-terminal UI with header, conversation sidebar, chat panel, composer, and status line;
 - Up/Down or `k`/`j` conversation navigation;
@@ -97,11 +99,35 @@ Current shell capabilities:
 - `F10`, `Ctrl+C`, or `q` from the conversation list exits;
 - terminal cleanup/restoration on normal and Ctrl+C exits;
 - Help overlay handles rapid/merged terminal key input without stranding the UI;
-- Help overlay redraws cleanly and derives its width from content with terminal-size clamping and padding;
-- authenticated server logout remains outside the UI and is performed by bootstrap.
+- Help overlay redraws cleanly and derives its width from content with terminal-size clamping and padding.
 
-Phase 3 does **not** implement conversation APIs, message history, sending,
-realtime, friend requests, or user search.
+Phase 3 implementation commit: `595b355`; subsequent fixes: `42e7f29`.
+
+## Phase 4 — server-backed conversations and history
+
+Phase 4 replaces the Phase 3 preview inbox with real server-backed conversation
+and message-history data.
+
+Implemented:
+
+- `GET /api/conversations/direct?limit&offset` through `ConversationApiClient`;
+- `GET /api/conversations/direct/{conversationId}/messages?afterSequence&limit`;
+- Jackson Java-time support for server `LocalDateTime` values, with no timezone conversion;
+- server DTOs kept separate from UI state;
+- JWT `sub` decoded to the authenticated `userId` for own-message attribution;
+- conversation state preserves the exact server-provided ordering;
+- conversation `lastSequenceNumber` is kept separate from the highest message sequence actually loaded locally;
+- initial history loads with `afterSequence=0` and `limit=20`;
+- history loads happen on daemon worker threads rather than blocking the UI loop;
+- loading, empty, and error states for message history;
+- nullable `otherParticipantUsername` has a client-side display fallback;
+- Phase 3 preview conversation/message classes removed.
+
+The Phase 4 client does **not** implement sending, realtime, friends/search,
+friend requests, local persistence, or new server endpoints. Message-history
+paging is supported by the API seam but no load-more UI is introduced yet.
+
+Phase 4 implementation commit: `9393514`.
 
 ## CLI usage
 
@@ -150,21 +176,23 @@ Simple, explicit packages under `com.samvaad.tui`:
 
 ```text
 cli/          application startup and command-line handling (picocli)
-bootstrap/    startup orchestration + console prompting
-api/          HTTP communication and server DTOs
-auth/         authentication/session credential holders
+bootstrap/    startup orchestration + console prompting + lifecycle orchestration
+api/          HTTP transport, API clients, server DTOs, API exceptions
+auth/         authentication credential holders + JWT subject decoding
 session/      authenticated-session state for the app lifetime
 realtime/     WebSocket/STOMP communication (future)
-model/        client-side state (future)
-ui/           Lanterna rendering/navigation/interaction
+model/        server-backed conversation/message state
+ui/           Lanterna rendering/navigation/interaction and history-loading seam
 config/       application configuration (AppConfig + resolver)
 ```
 
 Rules:
 
 - The UI must not directly construct HTTP requests or STOMP frames.
-- Server DTOs stay separate from UI state where useful.
+- Server DTOs stay separate from UI state.
 - Prefer immutable records for DTOs.
+- The conversation store preserves server ordering; it does not re-sort by timestamps.
+- Server `lastSequenceNumber` is a high-water mark, not proof that all messages through that sequence are locally loaded.
 - No ORM, database, SQLite, embedded server, broker, reactive framework,
   caching, or offline sync without a concrete requirement.
 
@@ -177,20 +205,16 @@ Rules:
 **Phase 3 — TUI shell: done** (implementation commit `595b355`; subsequent
 Phase 3 fixes `42e7f29`).
 
-Implemented and smoke-tested in the Phase 3 line:
+**Phase 4 — Server-backed conversations and message history: done**
+(commit `9393514`).
 
-- Lanterna `3.1.5`.
-- Full-screen terminal lifecycle and restoration.
-- Sidebar/chat/header/composer/status layout.
-- Keyboard navigation and help overlay.
-- In-memory preview inbox, explicitly marked as preview data.
-- Robust help input handling for terminal escape-sequence edge cases.
-- Clean renderer redraws, resize handling, and content-derived Help geometry/padding.
-- TUI receives display data only; authentication tokens remain outside the UI.
-- Logout/revocation remains server-authoritative.
-- 67 automated tests passing at the current Phase 3 baseline.
+Phase 4 has **106 automated tests passing**. The implementation was also
+smoke-tested against the local Samvaad Server with disposable conversation
+fixtures: login, server-backed conversation list, ordered message history,
+server logout/revocation, and clean terminal restoration all passed. Test
+fixtures were removed afterward.
 
-Next phases will be defined incrementally after the relevant Samvaad Server
-contracts are verified. Expected areas include conversation list/history,
-direct conversations, messaging, realtime receiving, username search, and
-friend/request workflows.
+Next phases will be defined only after the relevant Samvaad Server contracts
+are verified. Messaging/send and realtime are intentionally separate future
+phases; friends/search/request workflows are also separate and must use only
+verified server contracts.
