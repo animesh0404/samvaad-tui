@@ -13,75 +13,44 @@ No system Gradle installation is required.
 ```bash
 ./gradlew build
 ./gradlew test
+./gradlew installDist
 ```
 
-For the fullscreen TUI, build the installed application distribution:
+For the fullscreen TUI, use the installed application launcher in a real terminal:
 
 ```bash
-./gradlew installDist
 build/install/samvaad-tui/bin/samvaad-tui --server http://localhost:8080 --username alice
 ```
 
-The fullscreen Lanterna TUI requires a real terminal. The installed
-application launcher is the supported manual smoke-test path; `./gradlew run`
-is useful for CLI/non-interactive behavior but is not the primary way to run
-the fullscreen shell.
-
-Show CLI help:
-
-```bash
-./gradlew run --args="--help"
-```
-
-## Packaging
-
-The `jar` task declares `Main-Class: com.samvaad.tui.Main`, so the built
-JAR carries a correct executable entry point. It is a thin JAR: runtime
-dependencies remain external, so plain `java -jar` is not standalone.
-
-The primary V1 distribution mechanism is the Gradle application
-distribution (`installDist`, `distZip`, `distTar`), which bundles the JAR,
-all runtime dependencies, and the `samvaad-tui` launcher. No fat/uber JAR
-(e.g. Shadow) is used.
+`./gradlew run` is useful for CLI/non-interactive behavior but is not the primary way to run the fullscreen shell.
 
 ## TUI development
 
-Phase 3 established the Lanterna `3.1.5` fullscreen shell. Phase 4 replaced
-preview data with server-backed conversation/message state. Phase 5 adds
-message sending and realtime delivery. Phase 6 adds exact user lookup and
-pending friend-request workflows. Phase 7 adds the authoritative Friends tab
-and start-chat workflow.
+Phase 3 established the Lanterna fullscreen shell. Phase 4 replaced preview data with server-backed conversation/message state. Phase 5 adds message sending and realtime delivery. Phase 6 adds exact user lookup and pending friend-request workflows. Phase 7 adds the authoritative Friends tab, start-chat workflow, automatic conversation discovery, and universal manual refresh.
 
 Responsibilities:
 
 - `TuiApp` owns terminal lifecycle, the polling render/input loop, and background worker coordination.
-- `TuiController` owns keyboard-to-state transitions and composer/social interaction.
-- `TuiRenderer` owns terminal presentation, including active-pane focus, messages, send status, lookup results, request panels, and the Friends tab.
-- `TuiLauncher` is the bootstrap seam.
-- `TuiSession` is a token-free bundle of UI display context, conversation/social state, history-loading behavior, and realtime operations.
-- `ConversationStore` owns in-memory server-backed conversation/message presentation state, preserves server ordering, deduplicates authoritative messages, and tracks high-water versus locally loaded sequence. It can replace its conversation list wholesale from a fresh authoritative server response after first-message creation.
-- `FriendRequestStore` separately owns exact-username lookup state and pending incoming/outgoing friend-request presentation state.
-- `FriendStore` separately owns the authoritative friends list returned by `GET /api/friends`; it preserves server order and is never derived from request or conversation state.
-- `ConversationApiClient` owns verified conversation/history reads and the verified first-message REST operation.
-- `UserLookupApiClient` owns verified exact-username lookup.
-- `FriendRequestApiClient` owns the six verified friend-request HTTP operations.
-- `FriendsApiClient` owns the verified `GET /api/friends` read.
-- `FriendService` is the token-free UI seam for social operations, including Friends refresh and first-message sending; `AppBootstrap` keeps the access token inside authenticated closures.
-- `MessageHistoryLoader` keeps history loading behind a small seam for testing and realtime catch-up.
-- `ConversationListLoader` keeps authoritative conversation-list refresh behind a small seam used after first-message creation.
-- `RealtimeClient` is the transport seam.
-- `SpringRealtimeClient` implements the verified WebSocket/STOMP contract.
-- `RealtimeManager` owns connection lifecycle, conversation subscriptions, sending, bounded reconnect, catch-up, and token containment.
+- `TuiController` owns keyboard-to-state transitions and central refresh dispatch.
+- `TuiRenderer` owns terminal presentation, including active-pane focus, messages, send status, lookup results, request panels, Friends, and help.
+- `TuiSession` is a token-free bundle of UI display context, server-backed state, history loading, realtime operations, and social service seams.
+- `ConversationStore` owns in-memory authoritative conversation/message presentation state, preserves server ordering, and supports wholesale authoritative conversation-list replacement.
+- `FriendRequestStore` separately owns lookup and pending request presentation state.
+- `FriendStore` separately owns the authoritative friends list from `GET /api/friends`.
+- `ConversationListLoader` is the shared authoritative conversation-list loading seam used by first-message reconciliation, automatic discovery, and manual conversation refresh.
+- `MessageHistoryLoader` keeps history loading behind a testable seam.
+- `RealtimeManager` owns connection lifecycle, subscriptions, sending, bounded reconnect, and catch-up.
 
-Current bindings:
+## Current bindings
 
 ```text
 Up / Down / k / j  select active sidebar item
 Left / Right       switch CONVERSATIONS / FRIENDS when sidebar is focused
 Tab                switch focus / request section
-Enter              open selected item / composer or send message / select friend or lookup action
+Enter              open selected item / composer or send / select friend or lookup action
+F5                 refresh authoritative data for the active server-backed view
 /                  enter exact username search
-g                  refresh active Friends/request list where supported
+g                  existing Friends/request refresh shortcut where supported
 r                  open friend requests
 F1 / ?              help
 Esc                 close help / leave social mode / cancel pending new chat
@@ -89,40 +58,29 @@ F10 / Ctrl+C        quit
 q (conversation/friends list) quit
 ```
 
-The Friends tab shows the server-authoritative friend list. Left/Right tab
-switching is only active while the sidebar has focus, so composer/search/request
-input retains its existing key behavior. Friends navigation does not wrap.
-Enter on a friend opens a known conversation or enters a pending new-chat state.
-The first message uses the existing REST direct-message endpoint; after success,
-the authoritative response drives conversation reconciliation and the existing
-STOMP/history flow.
+`F5` is a TUI-wide manual refresh convention. `TuiController` dispatches it centrally rather than duplicating HTTP logic in each screen. In conversations it uses the same refresh path as automatic discovery; in Friends and request views it uses the existing loaders; in search it reuses the existing exact-username lookup action. F5 is asynchronous, does not restart the TUI, and does not steal selection or focus. Existing `g` refresh behavior remains additive.
 
-Within friend-request mode, the UI supports incoming/outgoing sections and
-verified actions for accept, reject, and cancel. Search performs exact username
-lookup; it is not fuzzy or prefix search. Friend-request HTTP work is done on
-background workers and is refreshed explicitly after mutations and periodically
-(30 seconds) while the request view is active.
+## Conversation discovery and refresh
 
-Friends HTTP work is also done on a background worker. The Friends list is
-refreshed on tab entry and with `g`; there is no periodic polling and no friend
-realtime subscription.
+While the fullscreen TUI is active, the conversation list is checked every 5 seconds. When due, `TuiApp` starts a guarded daemon worker that calls the existing `ConversationListLoader`, which in turn uses the verified `GET /api/conversations/direct?limit&offset` contract. No HTTP occurs on the render/input thread and overlapping conversation refreshes are prevented.
 
-The active pane/tab and selected item are visibly indicated. Messages display
-server-provided `LocalDateTime` values without timezone conversion. A normal
-realtime send remains `Sending...` until the authoritative broadcast carrying
-the matching request ID is observed. A first REST message is different: after
-the successful server response, its persisted message is authoritative and may
-be merged immediately; it is never rendered as a locally fabricated optimistic
-message.
+Successful refreshes replace the authoritative conversation list while preserving the selected conversation by `conversationId` across reorderings. Newly discovered conversations appear in server order but are not automatically opened or selected. If a selected conversation disappears, selection falls back to a clamped index; an empty result does not fabricate selection. Automatic refresh failures preserve the visible valid conversation list and remain silent.
 
-The renderer paints owned cells explicitly, handles resize-triggered redraws,
-and derives Help geometry from content with padding and narrow-terminal
-clamping. The polling render loop ensures background history/realtime/social
-changes become visible while the user is idle.
+When a discovered conversation is later selected, the existing lazy history loader and STOMP subscription flow handle it. Conversation polling is discovery-only and does not replace realtime message delivery.
+
+The refresh workers are daemon threads and do not introduce a scheduler/executor subsystem. They do not keep the JVM alive after the TUI lifecycle exits.
+
+## Friends and friend requests
+
+The Friends tab is populated only from `GET /api/friends`, preserving server order. It refreshes on tab entry and through the existing `g` shortcut; there is no Friends polling or friend realtime subscription.
+
+Friend-request HTTP work runs on background workers and existing request refresh behavior remains in place, including periodic refresh while the request view is active. Incoming/outgoing lists remain server-authoritative and newest-first.
+
+Selecting a friend resolves a known conversation by authoritative `userId`. If none is known, the TUI enters a pending-new-chat state and sends the first message through the existing REST direct-message contract. The server-created conversation and persisted message are authoritative; after success the existing conversation reconciliation, history, and realtime flow is reused.
 
 ## HTTP and realtime behavior
 
-The conversation/history HTTP paths remain:
+Verified conversation paths:
 
 ```text
 GET  /api/conversations/direct?limit&offset
@@ -130,18 +88,7 @@ GET  /api/conversations/direct/{conversationId}/messages?afterSequence&limit
 POST /api/conversations/direct/messages
 ```
 
-The first-message POST body is exactly:
-
-```json
-{"username":"<friend username>","content":"<message>","requestId":"<UUID>"}
-```
-
-The server returns the authoritative persisted `MessageResponse`, including
-`conversationId`. HTTP 201 and 200 both represent success. The client creates
-only the request UUID; message ID, conversation ID, sequence number, timestamp,
-and sender identity remain server-owned.
-
-Phase 6 social HTTP paths are:
+Verified social paths:
 
 ```text
 GET  /api/users/lookup?username={username}
@@ -151,28 +98,10 @@ GET  /api/friend-requests/outgoing
 POST /api/friend-requests/{requestId}/accept
 POST /api/friend-requests/{requestId}/reject
 POST /api/friend-requests/{requestId}/cancel
+GET  /api/friends
 ```
 
-Phase 7 Friends HTTP path is:
-
-```text
-GET /api/friends
-```
-
-`GET /api/friends` is authenticated, takes no parameters/body, returns safe
-`{userId, username}` entries, returns `[]` when empty, and supplies
-username-ascending order. The TUI preserves that order exactly.
-
-The lookup contract is exact username matching. The server performs its
-case-insensitive/trimmed match and returns one safe user record. The TUI does
-not implement fuzzy search, pagination, or client-side filtering.
-
-Friend-request IDs, timestamps, status transitions, authorization, duplicate
-detection, and persistence remain server-owned. The client generates no request
-IDs or idempotency keys and does not retry these operations. Incoming/outgoing
-lists are consumed in the order returned by the server.
-
-Phase 5 realtime paths are:
+Realtime remains:
 
 ```text
 WebSocket /ws
@@ -180,78 +109,19 @@ STOMP SEND /app/chat.send
 STOMP SUBSCRIBE /topic/conversations/{conversationId}
 ```
 
-STOMP CONNECT uses `Authorization: Bearer <access-token>`. The same access JWT
-used for HTTP is used for realtime. `SpringRealtimeClient` is a client-side
-library adapter only; the TUI does not become a Spring Boot application and
-does not host a server.
-
-The normal STOMP send payload supplies conversation ID, message content, and a
-fresh UUID `requestId`. Message ID, sequence number, timestamp, and sender
-identity remain server-owned. The client does not retry sends and does not
-optimistically mark messages as persisted.
-
-On unexpected realtime loss, `RealtimeManager` performs bounded reconnect,
-resubscribes to the selected conversation, and requests history after the
-store's `highestLoadedSequence`.
-
-The server's `/user/queue/errors` destination is not subscribed because its
-client wiring was not established by the verified contract. ERROR frames and
-session callbacks are the current realtime error path.
-
-## CLI behavior
-
-Usage:
-
-```text
-samvaad-tui [--server URL] [--username USERNAME]
-```
-
-If server URL or username is absent, the client prompts for it. The password is collected securely through the console when available; the non-console fallback warns that input may be visible.
-
-Current flow:
-
-1. resolve server URL
-2. resolve username
-3. collect password
-4. call login
-5. establish in-memory authenticated session and user id from JWT `sub`
-6. load the server conversation list
-7. establish realtime connection using the same access JWT
-8. enter the fullscreen TUI shell
-9. lazily load selected conversation history and subscribe to it
-10. use exact username lookup or manage pending friend requests through HTTP workers as needed
-11. enter the Friends tab to load the authoritative friend list when needed
-12. select an existing friend conversation or start a new one through the REST first-message contract
-13. send/receive subsequent messages through the realtime manager
-14. disconnect realtime
-15. call server logout
-16. clear local session state
-17. exit
-
-The server now provides an authoritative Friends list. The TUI does not infer
-friendship from conversations or pending requests. There is still no client-side
-unfriend, friendship-status, block, friend realtime, or conversation creation on
-friend acceptance.
-
-Exit codes:
-
-- `0` — successful execution
-- `1` — authentication/server/runtime failure
-- `2` — usage/validation failure
+The same access JWT is used for authenticated HTTP and STOMP. The TUI does not generate server-owned message IDs, conversation IDs, sequence numbers, timestamps, sender identity, or friend-request IDs.
 
 ## Testing approach
 
-API tests use the `HttpTransport` seam and a fake transport rather than requiring a running server. Conversation API tests verify exact paths/query parameters, first-message request/body semantics, UUID request IDs, JSON parsing including nullable participant usernames and `LocalDateTime`, malformed responses, transport failures, and HTTP mappings. User lookup tests verify exact path encoding, blank handling, response validation, and HTTP failure mapping. Friend-request API tests verify all six endpoints, null-body mutations, status mapping, malformed responses, and server-owned request IDs. Friends API tests verify the exact `GET /api/friends` path, authorization, server-order preservation, empty results, malformed results, and HTTP/transport failures. Session tests cover authentication state, token replacement, and authenticated user-id handling. Model tests cover server-order preservation, authoritative message merge/deduplication, the distinction between server high-water marks and locally loaded sequence, friend-request state, Friends state, and conversation-list replacement/pruning. TUI state/controller/renderer/app tests cover keyboard interaction, tab focus, first-chat selection, first-message reconciliation, focus, timestamps, send-state transitions, social navigation/actions, background repaint, and lifecycle behavior.
+API tests use the `HttpTransport` seam and fake transports. Model tests cover server-order preservation, authoritative message merge/deduplication, high-water versus locally loaded sequence, Friends/request state, and conversation-list replacement. TUI tests cover navigation, focus, social workflows, F5 dispatch, background conversation refresh, selection preservation, failure preservation, first-message reconciliation, and lifecycle behavior. Realtime tests cover transport destinations, subscriptions, authoritative message merge, reconnect, catch-up, and disconnect without requiring a live socket.
 
-Realtime tests cover the transport seam, URL/destination/payload behavior, subscription replacement/deduplication, request-ID generation, authoritative message merge, bounded reconnect/resubscription, history catch-up, notices, and disconnect behavior without requiring a live socket.
+Automatic refresh tests should use injected clocks/schedulers or equivalent deterministic seams rather than sleeping for the production 5-second interval. Do not introduce an interactive PTY smoke-test harness.
 
-A live server smoke test should use disposable data and a real terminal. Phase 7 automated verification remains non-interactive; the Friends tab and start-chat flow should be manually exercised in the real TUI. Do not introduce a fragile automated PTY harness.
+A live smoke test should use a real terminal. Cross-client manual verification should include creating a new chat from one TUI while another remains on Conversations, confirming discovery within the refresh interval, then selecting the discovered conversation and verifying history/realtime behavior.
 
 ## Dependency policy
 
-Keep the client dependency footprint small. Current runtime dependencies are picocli, Jackson (including `jackson-datatype-jsr310` for server `LocalDateTime`), Lanterna, Spring WebSocket, Spring Messaging, and the Tomcat WebSocket implementation used by the standard WebSocket client. JUnit is test-only.
-
-Spring WebSocket/Messaging are used only as client-side protocol libraries. Do not introduce Spring Boot, an embedded server, a broker, ORM/persistence, or another framework to solve a client concern without a concrete requirement.
+Keep the client dependency footprint small. Spring WebSocket/Messaging are client-side protocol libraries only; the TUI does not become a Spring Boot application or host a server. Do not introduce persistence, ORM, embedded server, broker, caching, offline sync, or another framework without a concrete requirement.
 
 ## Implementation workflow
 
@@ -266,6 +136,6 @@ For each phase:
 7. reconcile documentation
 8. update the root `README.md` as part of the same documentation gate
 9. commit and push
-10. verify the repository state
+10. verify repository state
 
-The root README is part of the primary project documentation, not a separate afterthought. Interactive smoke testing is a manual verification responsibility; automated tests should remain non-interactive and deterministic.
+ChatGPT owns primary documentation and ADR authoring. Interactive smoke testing is a manual responsibility; automated tests should remain deterministic and non-interactive.
