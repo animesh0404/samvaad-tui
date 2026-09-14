@@ -29,6 +29,18 @@ Verified server/realtime contracts include authenticated HTTP, `GET /api/convers
 build/install/samvaad-tui/bin/samvaad-tui --server http://localhost:8080 --username alice
 ```
 
+The build also produces a self-contained fat JAR with all runtime dependencies:
+
+```text
+java -jar build/libs/samvaad-tui.jar --server http://localhost:8080 --username alice
+```
+
+Windows 11 is supported: the fat JAR bundles Lanterna's native Windows backend
+(via JNA), and the Java 25 native-access grant is pre-configured in the JAR
+manifest and launch scripts, so no manual JVM flags are needed. Validated on
+Windows 11 + Temurin 25.0.4 (Windows Terminal + PowerShell), including
+Linux-to-Windows messaging.
+
 The fullscreen Lanterna TUI requires a real terminal. `./gradlew run --args="--help"` is useful for CLI/non-interactive behavior.
 
 Password input uses `System.console().readPassword()` when available, with a visible-input warning fallback when no console exists. Passwords are held as `char[]` and cleared after use.

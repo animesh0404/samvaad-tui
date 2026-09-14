@@ -20,10 +20,18 @@ dependencies {
     implementation 'info.picocli:picocli:4.7.7'
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.22.2'
     implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.22.2'
-    implementation 'com.googlecode.lanterna:lanterna:3.1.5'
+    implementation 'com.googlecode.lanterna:lanterna:3.2.0-alpha1'
     implementation 'org.springframework:spring-websocket:7.0.9'
     implementation 'org.springframework:spring-messaging:7.0.9'
     implementation 'org.apache.tomcat.embed:tomcat-embed-websocket:11.0.25'
+    // Lanterna loads its native Windows terminal support reflectively via JNA, which
+    // Lanterna does not declare as a (transitive) dependency. Declared explicitly so
+    // DefaultTerminalFactory can initialize the native Windows terminal instead of
+    // falling through to the Cygwin path. runtimeOnly: our code never compiles
+    // against JNA; it is purely a Lanterna runtime requirement (cross-platform:
+    // unused on Linux/macOS, bundled harmlessly).
+    runtimeOnly 'net.java.dev.jna:jna:5.19.1'
+    runtimeOnly 'net.java.dev.jna:jna-platform:5.19.1'
     testImplementation platform('org.junit:junit-bom:6.1.3')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -32,22 +40,133 @@ dependencies {
 application {
     mainClass = 'com.samvaad.tui.Main'
     applicationName = 'samvaad-tui'
+    // JNA performs native access, which Java 25 restricts unless enabled. Baking the
+    // flag into the generated launch scripts (installDist/distZip, including the
+    // Windows .bat) avoids requiring users to pass JVM arguments manually.
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
 }
 
 tasks.withType(JavaCompile).configureEach {
     options.release = 25
 }
 
+// Merged ServiceLoader/Spring descriptors land here (see prepareFatMerge below).
+def fatMergeDir = layout.buildDirectory.dir('tmp/fatMerge')
+
 tasks.named('jar', Jar) {
+    archiveFileName = 'samvaad-tui.jar'
     manifest {
-        attributes('Main-Class': application.mainClass)
+        attributes(
+                'Main-Class': application.mainClass,
+                'Multi-Release': 'true',
+                // Java 25 native-access grant for the executable fat JAR: lets
+                // `java -jar samvaad-tui.jar` use JNA without manual JVM flags.
+                // (Only ALL-UNNAMED is supported here; anything else fails at launch.)
+                'Enable-Native-Access': 'ALL-UNNAMED',
+                'Implementation-Title': 'samvaad-tui',
+                'Implementation-Version': project.version
+        )
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    // Exclude JAR signatures and module descriptors: invalid/duplicated in a fat JAR
+    // running on the classpath. Applies to all sources (merged descriptors contain
+    // neither signatures nor module-info, so this is safe globally).
+    exclude(
+            'META-INF/*.SF',
+            'META-INF/*.DSA',
+            'META-INF/*.RSA',
+            'META-INF/*.EC',
+            'module-info.class',
+            'META-INF/versions/*/module-info.class'
+    )
+    // Unpack all runtime dependencies. Descriptors merged via prepareFatMerge are
+    // excluded HERE ONLY (child spec), so the merged copies added below are kept.
+    from({ configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }) {
+        exclude(
+                'META-INF/services/*',
+                'META-INF/spring.handlers',
+                'META-INF/spring.schemas',
+                'META-INF/spring.tooling',
+                'META-INF/spring.factories',
+                'META-INF/spring/*'
+        )
+    }
+    from(fatMergeDir) {
+        // Merged service/Spring descriptors land at the same META-INF paths.
+        duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    }
+    dependsOn(tasks.named('prepareFatMerge'))
+}
+
+// Merges ServiceLoader descriptors and Spring descriptor files across all runtime
+// dependencies by concatenation (de-duplicated lines). Plain EXCLUDE would silently
+// drop entries (e.g. jakarta.servlet.ServletContainerInitializer from spring-web vs
+// tomcat-embed-websocket, or spring.handlers/schemas/tooling across spring-*.jar).
+tasks.register('prepareFatMerge') {
+    group = 'build'
+    description = 'Merges META-INF/services/* and META-INF/spring* descriptors for the fat JAR.'
+    inputs.files(configurations.runtimeClasspath)
+    outputs.dir(fatMergeDir)
+    doLast {
+        Map<String, LinkedHashSet<String>> merged = [:]
+        configurations.runtimeClasspath.files.each { File dep ->
+            if (!dep.name.endsWith('.jar') || !dep.isFile()) {
+                return
+            }
+            try {
+                java.util.zip.ZipFile zf = new java.util.zip.ZipFile(dep)
+                try {
+                    zf.entries().each { entry ->
+                        if (entry.isDirectory()) {
+                            return
+                        }
+                        String name = entry.name
+                        boolean mergeable = (name.startsWith('META-INF/services/') && name != 'META-INF/services/')
+                                || name == 'META-INF/spring.handlers'
+                                || name == 'META-INF/spring.schemas'
+                                || name == 'META-INF/spring.tooling'
+                                || name == 'META-INF/spring.factories'
+                                || (name.startsWith('META-INF/spring/') && name != 'META-INF/spring/')
+                        if (!mergeable) {
+                            return
+                        }
+                        String text = zf.getInputStream(entry).getText('UTF-8')
+                        LinkedHashSet<String> lines = merged.computeIfAbsent(name, { k -> new LinkedHashSet<>() })
+                        text.eachLine { line ->
+                            String trimmed = line.trim()
+                            if (!trimmed.isEmpty() && !trimmed.startsWith('#')) {
+                                lines.add(line)
+                            } else if (!trimmed.isEmpty()) {
+                                lines.add(line)
+                            }
+                        }
+                    }
+                } finally {
+                    zf.close()
+                }
+            } catch (java.util.zip.ZipException ignored) {
+                // Skip non-zip artifacts; they contribute nothing to the merge.
+            }
+        }
+        File outDir = fatMergeDir.get().asFile
+        outDir.deleteDir()
+        outDir.mkdirs()
+        merged.each { path, lines ->
+            File out = new File(outDir, path)
+            out.parentFile.mkdirs()
+            out.setText(lines.join('\n') + (lines.isEmpty() ? '' : '\n'), 'UTF-8')
+        }
     }
 }
 
 tasks.named('run', JavaExec) {
     standardInput = System.in
+    // Same native-access grant as the packaged launch scripts, for `./gradlew run`.
+    jvmArgs('--enable-native-access=ALL-UNNAMED')
 }
 
 tasks.named('test') {
     useJUnitPlatform()
+    // Allows tests exercising JNA-loaded code paths to run on Java 25.
+    jvmArgs('--enable-native-access=ALL-UNNAMED')
 }

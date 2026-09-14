@@ -22,6 +22,13 @@ For the fullscreen TUI, use the installed application launcher in a real termina
 build/install/samvaad-tui/bin/samvaad-tui --server http://localhost:8080 --username alice
 ```
 
+The build also produces a self-contained fat JAR (`build/libs/samvaad-tui.jar`,
+runnable with plain `java -jar` on Java 25). Windows 11 is a supported target:
+the fat JAR bundles Lanterna's native Windows backend via JNA, and the Java 25
+native-access grant is pre-configured in the JAR manifest and launch scripts,
+so no manual JVM flags are needed. Validated on Windows 11 + Temurin 25.0.4
+(Windows Terminal + PowerShell), including Linux-to-Windows messaging.
+
 `./gradlew run` is useful for CLI/non-interactive behavior but is not the primary way to run the fullscreen shell.
 
 ## TUI development
