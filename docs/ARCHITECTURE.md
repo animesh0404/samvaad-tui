@@ -28,14 +28,14 @@ The TUI owns terminal interaction, client-side presentation state, session state
 - `api` — HTTP transport, API clients, exceptions, and server DTOs.
 - `session` — authenticated client session state, including the authenticated user id derived from the server-issued JWT.
 - `realtime` — WebSocket/STOMP transport seam and realtime lifecycle management.
-- `model` — server-backed conversation/message state plus user-lookup and friend-request presentation state for the TUI lifetime.
+- `model` — server-backed conversation/message state plus user-lookup, friend-request, and friends presentation state for the TUI lifetime.
 - `ui` — Lanterna terminal rendering, navigation, interaction, terminal lifecycle, and token-free service seams.
 
 The UI must not construct HTTP requests or STOMP frames directly.
 
 ## TUI shell architecture
 
-Phase 3 established the Lanterna UI boundary. Phase 4 replaced preview data with server-backed state. Phase 5 adds realtime transport and message sending. Phase 6 adds user lookup and pending friend-request workflows without coupling those operations to conversation state:
+Phase 3 established the Lanterna UI boundary. Phase 4 replaced preview data with server-backed state. Phase 5 adds realtime transport and message sending. Phase 6 adds user lookup and pending friend-request workflows. Phase 7 adds an authoritative Friends tab and first-chat workflow:
 
 ```text
 AppBootstrap
@@ -47,6 +47,7 @@ AppBootstrap
     +--> UserLookupApiClient ------> Samvaad Server
     |
     +--> FriendRequestApiClient ---> Samvaad Server
+    +--> FriendsApiClient ---------> Samvaad Server
     |
     +--> RealtimeManager
     |       |
@@ -61,32 +62,42 @@ AppBootstrap
       |        |
    TuiState  Lanterna Screen
       |\
-      | +--> FriendRequestStore
       +-----> ConversationStore
+      +-----> FriendRequestStore
+      +-----> FriendStore
 ```
 
 `TuiLauncher` is the bootstrap-facing seam. `TuiApp` owns terminal lifecycle, the render/input loop, and background work coordination. `TuiController` translates key strokes into state transitions. `TuiRenderer` renders only client-side display state. `TuiSession` provides the UI with display context, server-backed stores, history loading, realtime operations, and the token-free `FriendService` without exposing raw access/refresh tokens.
 
-`ConversationApiClient` implements only the verified conversation-list and message-history reads. There is no single-conversation lookup endpoint in the server contract, and the client does not invent one.
+`ConversationApiClient` implements the verified conversation-list and message-history reads plus the verified first-message REST operation. There is no single-conversation lookup endpoint and no dedicated conversation-create endpoint; the client does not invent either.
 
-`ConversationStore` preserves server-provided conversation ordering and message sequence ordering. It separates the server-provided `lastSequenceNumber` high-water mark from `highestLoadedSequence`, which records what the client has actually loaded locally. Realtime messages are merged by server-owned message identity and sequence, while request IDs provide send correlation.
+`ConversationStore` preserves server-provided conversation ordering and message sequence ordering. It separates the server-provided `lastSequenceNumber` high-water mark from `highestLoadedSequence`, which records what the client has actually loaded locally. Realtime messages and authoritative REST first-message responses are merged by server-owned message identity and sequence.
 
-`FriendRequestStore` is deliberately separate from `ConversationStore`. It holds the latest exact-username lookup result and pending incoming/outgoing requests, with independent loading/error state and exact server ordering. It does not attempt to represent an accepted-friends list because no authoritative friends-list endpoint is provided by the server.
+`FriendRequestStore` is deliberately separate from `ConversationStore`. It holds the latest exact-username lookup result and pending incoming/outgoing requests, with independent loading/error state and exact server ordering.
 
-History loading, user lookup, and friend-request HTTP operations are initiated from `TuiApp` on daemon workers so terminal input/rendering is not blocked. Realtime callbacks arrive on transport threads and update synchronized client state; the polling render loop repaints background changes while the UI is idle.
+`FriendStore` is a separate authoritative friends-list store. It is populated only by `GET /api/friends`, preserves the server's username-ascending order, and is never derived from friend requests, conversations, or messages.
+
+When a friend is selected, `TuiApp` resolves an existing conversation by the friend's authoritative `userId`. If one is known, the existing conversation/history/realtime flow is reused. If none is known, the UI enters a pending-new-chat state. The first message is sent through `POST /api/conversations/direct/messages` using the friend's username and a fresh client-generated UUID `requestId`; the server creates the conversation when needed.
+
+After a successful first-message request, the returned message and `conversationId` are authoritative. The TUI merges the persisted message, refreshes the conversation list, replaces the local list with server-provided ordering, selects the returned conversation, tops up its history, and then lets the existing realtime subscription machinery take over. The TUI never fabricates conversation metadata or message identity/sequence/timestamps.
+
+History loading, user lookup, friend-request HTTP operations, Friends HTTP operations, and first-message HTTP operations are initiated from `TuiApp` on daemon workers so terminal input/rendering is not blocked. Realtime callbacks arrive on transport threads and update synchronized client state; the polling render loop repaints background changes while the UI is idle.
 
 ## HTTP architecture
 
-`AuthApiClient`, `ConversationApiClient`, `UserLookupApiClient`, and `FriendRequestApiClient` depend on `HttpTransport`. `JdkHttpTransport` implements that boundary using `java.net.http.HttpClient`. Jackson handles JSON serialization/deserialization, including Java `LocalDateTime` values returned by the server.
+`AuthApiClient`, `ConversationApiClient`, `UserLookupApiClient`, `FriendRequestApiClient`, and `FriendsApiClient` depend on `HttpTransport`. `JdkHttpTransport` implements that boundary using `java.net.http.HttpClient`. Jackson handles JSON serialization/deserialization, including Java `LocalDateTime` values returned by the server.
 
-The conversation API client exposes the exact verified reads:
+The conversation API client exposes the verified contracts:
 
 ```text
-GET /api/conversations/direct?limit&offset
-GET /api/conversations/direct/{conversationId}/messages?afterSequence&limit
+GET  /api/conversations/direct?limit&offset
+GET  /api/conversations/direct/{conversationId}/messages?afterSequence&limit
+POST /api/conversations/direct/messages
 ```
 
-The Phase 6 social API clients expose only these verified contracts:
+The first-message operation is addressed by exact friend username and carries `username`, `content`, and a client-generated UUID `requestId`. The server returns the authoritative persisted message, including the authoritative `conversationId`. HTTP 201 and 200 are successful outcomes under the existing server idempotency contract.
+
+The Phase 6 social API clients expose:
 
 ```text
 GET  /api/users/lookup?username={username}
@@ -98,34 +109,40 @@ POST /api/friend-requests/{requestId}/reject
 POST /api/friend-requests/{requestId}/cancel
 ```
 
+Phase 7 adds:
+
+```text
+GET /api/friends
+```
+
+`GET /api/friends` is authenticated, has no query parameters or body, returns safe `{userId, username}` friend records, returns `[]` for no friends, and provides deterministic username-ascending ordering. The TUI preserves that order and does not re-sort.
+
 User lookup is exact-username lookup; the server performs case-insensitive trimmed matching and returns one safe user record. There is no prefix, substring, fuzzy, or paginated user search contract.
 
-Friend-request request IDs and timestamps are server-owned. The client does not generate request IDs, idempotency keys, retries, or status transitions. Incoming and outgoing endpoints return pending requests in server-provided newest-first order; the client preserves that order.
+Friend-request request IDs and timestamps are server-owned. The client does not generate request IDs, idempotency keys, retries, or status transitions. Incoming and outgoing pending requests remain in server-provided newest-first order.
 
-Conversation paging is offset-based. Message history uses the server's sequence cursor: only messages with `sequenceNumber > afterSequence` are returned, in ascending sequence order. Phase 4 loads initial history with `afterSequence=0&limit=20`.
+Conversation paging is offset-based. Message history uses the server's sequence cursor: only messages with `sequenceNumber > afterSequence` are returned, in ascending sequence order. Initial history uses `afterSequence=0&limit=20`.
 
 The API layer preserves server ordering and does not sort by timestamps. Server timestamps are zone-less `LocalDateTime` values and are displayed without timezone conversion.
 
-## Friend-request and social-state architecture
-
-Phase 6 keeps social state intentionally narrow:
+## Social-state architecture
 
 ```text
-User lookup ----> UserLookupEntry ----┐
-                                      |
-Incoming requests ---> FriendRequestStore
-Outgoing requests ---> FriendRequestStore
-Mutations ----------> FriendRequestStore
-                                      |
-                                      v
-                              TuiState / Renderer
+GET /api/users/lookup --------------------> UserLookupEntry
+                                                |
+POST/GET/mutate /api/friend-requests ------> FriendRequestStore
+                                                |
+GET /api/friends -------------------------> FriendStore
+                                                |
+                                                v
+                                          TuiState / Renderer
 ```
 
-`FriendService` is a token-free UI seam. `AppBootstrap` owns closures containing the authenticated access token and adapts API DTOs into UI model entries. The UI can request lookup, send, refresh, accept, reject, and cancel operations without receiving a token.
+`FriendService` is a token-free UI seam. `AppBootstrap` owns closures containing the authenticated access token and adapts API DTOs into UI model entries. The UI can request lookup, friend-request operations, friend-list refresh, and first-message sending without receiving a token.
 
-The TUI refreshes pending request lists explicitly after mutations and periodically while the request view is active. There is no friend-request realtime subscription because no such verified server contract exists.
+The Friends tab is refreshed when entered and through explicit `g` refresh. There is no Friends polling and no friend realtime subscription in Phase 7.
 
-The server currently exposes no authoritative accepted-friends list, friendship-status endpoint, unfriend operation, block model, or conversation creation operation on friend acceptance. The TUI therefore does not infer friends from conversations or pending requests and does not invent those contracts. A future friends tab requires a server-owned friends-list read contract before implementation.
+Friendship is a domain relationship established by an accepted friend request, but the client consumes the dedicated server Friends API rather than reconstructing that relationship from request records. There is no client-side unfriend, block, friendship-status, or conversation creation-on-acceptance behavior.
 
 ## Realtime architecture
 
@@ -154,11 +171,11 @@ TuiApp / TuiController
 
 The client derives `ws://` or `wss://` from the configured HTTP(S) server URL and connects to `/ws`. STOMP CONNECT carries the same access JWT used by authenticated HTTP. The manager subscribes to `/topic/conversations/{conversationId}` and sends chat messages to `/app/chat.send`.
 
-The transport does not perform its own retries. `RealtimeManager` owns bounded reconnect policy. On an unexpected connection loss it reconnects with the same access token, restores the selected conversation subscription, and uses the HTTP history seam for catch-up from `highestLoadedSequence`. This avoids treating a realtime socket as the authoritative persistence layer.
+The transport does not perform its own retries. `RealtimeManager` owns bounded reconnect policy. On an unexpected connection loss it reconnects with the same access token, restores the selected conversation subscription, and uses the HTTP history seam for catch-up from `highestLoadedSequence`.
 
 Incoming broadcasts are mapped to `MessageEntry` and merged into `ConversationStore` using server-owned message ID and sequence. The store deduplicates messages and preserves ascending sequence order. The client never generates message IDs, sequence numbers, timestamps, or sender identity.
 
-Sending is deliberately non-optimistic. The client creates a fresh UUID `requestId`, sends the verified payload, and displays a pending `Sending...` state. The pending send becomes `Sent` only when an authoritative broadcast carrying the matching request ID is observed. A failed synchronous handoff surfaces an error rather than fabricating success; a silently dropped send remains pending because no authoritative success has been observed.
+Normal subsequent sends remain non-optimistic. The client creates a fresh UUID `requestId`, sends the verified payload, and displays a pending `Sending...` state. The pending send becomes `Sent` only when an authoritative broadcast carrying the matching request ID is observed.
 
 The server's `/user/queue/errors` destination is intentionally not subscribed because that wiring was not established by the verified contract. Transport ERROR frames and session callbacks provide the currently supported error path.
 
@@ -178,8 +195,8 @@ CLI
   -> token-free FriendService closure
   -> TuiSession
   -> fullscreen TUI
-  -> selected conversation / social workflow
-  -> history + realtime subscription / HTTP friend operations
+  -> selected conversation / Friends workflow
+  -> history + realtime subscription / HTTP social operations
   -> exit
   -> realtime disconnect
   -> AuthApiClient
@@ -201,7 +218,7 @@ Authentication state and realtime credentials are currently in memory only. Ther
 
 The API layer must avoid exposing credentials or sensitive response bodies. Authentication/runtime failures are surfaced to the CLI as failure status `1`; usage/validation failures use status `2`. TUI history and social-operation failures are translated into explicit loading/error states while server logout still runs.
 
-Friend-request HTTP failures preserve the server status taxonomy at the API boundary (including 400, 401, 403, 404, and 409) without exposing response bodies. Some 409 cases therefore have a combined user-facing explanation.
+Friend-request and Friends HTTP failures preserve the server status taxonomy at the API boundary without exposing response bodies. The Friends API maps 401 to authentication failure and other non-2xx responses to HTTP errors with the status preserved. First-message HTTP uses the same status-preserving boundary; its UI maps common 400/401/403/404/409 cases to concise status messages.
 
 Realtime errors are represented by token-free notices. Reconnect is bounded rather than infinite. The current server contract does not provide a verified client-visible `/user/queue/errors` subscription, so the TUI does not invent one.
 
@@ -216,6 +233,7 @@ Realtime errors are represented by token-free notices. Reconnect is bounded rath
 7. Implement only against verified server contracts.
 8. Keep terminal lifecycle and presentation concerns inside the UI boundary.
 9. Preserve server ordering and sequencing semantics rather than recreating them client-side.
-10. Reconcile client-visible send state only from authoritative server messages.
+10. Reconcile client-visible send state only from authoritative server messages/responses.
 11. Keep friendship state separate from conversation state.
-12. Do not infer or invent social relationships when the server does not expose an authoritative read contract.
+12. Do not infer or invent social relationships when the server provides an authoritative Friends API.
+13. Reuse the existing first-message conversation-creation contract rather than inventing a dedicated conversation-create API.
