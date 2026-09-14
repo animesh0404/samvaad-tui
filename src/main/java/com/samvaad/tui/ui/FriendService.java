@@ -1,6 +1,8 @@
 package com.samvaad.tui.ui;
 
 import com.samvaad.tui.api.SamvaadApiException;
+import com.samvaad.tui.model.FirstMessage;
+import com.samvaad.tui.model.FriendEntry;
 import com.samvaad.tui.model.FriendRequestEntry;
 import com.samvaad.tui.model.UserLookupEntry;
 import java.util.List;
@@ -63,4 +65,25 @@ public interface FriendService {
      * @throws SamvaadApiException when cancelling fails
      */
     FriendRequestEntry cancel(UUID requestId);
+
+    /**
+     * Reloads the authoritative accepted-friends list in server order.
+     * Friendship is determined by the server; nothing here derives it
+     * from request or conversation state.
+     *
+     * @throws SamvaadApiException when loading fails
+     */
+    List<FriendEntry> refreshFriends();
+
+    /**
+     * Sends the first message to a friend by exact username through the
+     * REST first-message endpoint, which creates the conversation when
+     * none exists. The caller supplies a fresh idempotency key; message
+     * ID, conversation ID, sequence, and timestamp are server-owned.
+     *
+     * @return the authoritative persisted message with its
+     *     authoritative conversation ID
+     * @throws SamvaadApiException when sending fails
+     */
+    FirstMessage sendFirstMessage(String username, String content, UUID requestId);
 }

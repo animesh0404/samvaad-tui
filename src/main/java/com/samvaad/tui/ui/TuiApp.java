@@ -10,8 +10,11 @@ import com.googlecode.lanterna.terminal.ansi.UnixLikeTerminal;
 import com.samvaad.tui.api.SamvaadApiException;
 import com.samvaad.tui.model.ConversationEntry;
 import com.samvaad.tui.model.ConversationStore;
+import com.samvaad.tui.model.FirstMessage;
+import com.samvaad.tui.model.FriendEntry;
 import com.samvaad.tui.model.FriendRequestEntry;
 import com.samvaad.tui.model.FriendRequestStore;
+import com.samvaad.tui.model.FriendStore;
 import com.samvaad.tui.model.MessageEntry;
 import com.samvaad.tui.model.UserLookupEntry;
 import com.samvaad.tui.realtime.RealtimeException;
@@ -38,6 +41,7 @@ public final class TuiApp implements TuiLauncher {
     private final TuiRenderer renderer = new TuiRenderer();
     private volatile boolean requestsRefreshing;
     private volatile long lastRequestRefresh;
+    private volatile boolean friendsRefreshing;
 
     @Override
     public void launch(TuiSession session) {
@@ -82,7 +86,7 @@ public final class TuiApp implements TuiLauncher {
             reconcilePendingSend(session.store(), state);
             maybeRefreshRequests(session, state);
             renderer.render(screen, state, session.store(), session.username(), session.serverUrl(),
-                    session.friendStore());
+                    session.friendStore(), session.friendList());
             screen.refresh();
             KeyStroke key = screen.pollInput();
             if (key == null) {
@@ -97,7 +101,8 @@ public final class TuiApp implements TuiLauncher {
             TuiController.Action action = controller.handle(key, state,
                     session.store().conversations(),
                     session.friendStore().incoming().size(),
-                    session.friendStore().outgoing().size());
+                    session.friendStore().outgoing().size(),
+                    session.friendList().friends().size());
             if (action == TuiController.Action.QUIT) {
                 return;
             }
@@ -121,6 +126,15 @@ public final class TuiApp implements TuiLauncher {
             }
             if (action == TuiController.Action.REFRESH_REQUESTS) {
                 refreshRequests(session, state, true);
+            }
+            if (action == TuiController.Action.REFRESH_FRIENDS) {
+                refreshFriends(session, state);
+            }
+            if (action == TuiController.Action.SELECT_FRIEND) {
+                selectFriend(session, state);
+            }
+            if (action == TuiController.Action.SEND_FIRST_MESSAGE) {
+                sendFirstMessage(session, state);
             }
         }
     }
@@ -282,6 +296,179 @@ public final class TuiApp implements TuiLauncher {
         }, "samvaad-friend-cancel");
         worker.setDaemon(true);
         worker.start();
+    }
+
+    /**
+     * Opens the selected friend's chat. Resolution is in-memory: userId
+     * is the authoritative identity against the loaded conversation
+     * list. A known conversation opens through the existing history and
+     * realtime flow; otherwise a pending new-chat state focuses the
+     * composer for the REST first message. Creates nothing.
+     */
+    void selectFriend(TuiSession session, TuiState state) {
+        List<FriendEntry> friends = session.friendList().friends();
+        if (friends.isEmpty()) {
+            return;
+        }
+        int index = Math.min(state.friendSelectedIndex(), friends.size() - 1);
+        FriendEntry friend = friends.get(index);
+        int conversationIndex =
+                findConversationIndexByUser(session.store().conversations(), friend.userId());
+        if (conversationIndex >= 0) {
+            state.showConversationsTab();
+            state.selectConversation(conversationIndex);
+            state.setStatus("Opened " + friend.username() + ".");
+            return;
+        }
+        state.startNewChat(friend.userId(), friend.username());
+        state.focusComposer();
+        state.setStatus("New chat with " + friend.username() + ". Type the first message.");
+    }
+
+    /**
+     * Index of the conversation with the given other participant, or -1.
+     * Identity is the authoritative user ID, never the username.
+     */
+    static int findConversationIndexByUser(List<ConversationEntry> conversations, UUID userId) {
+        for (int i = 0; i < conversations.size(); i++) {
+            if (userId != null && userId.equals(conversations.get(i).otherParticipantUserId())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Index of the conversation with the given server ID, or -1.
+     */
+    static int indexOfConversation(List<ConversationEntry> conversations, UUID conversationId) {
+        for (int i = 0; i < conversations.size(); i++) {
+            if (conversationId != null
+                    && conversationId.equals(conversations.get(i).conversationId())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Refreshes the authoritative friends list on a daemon worker. The
+     * concurrent guard mirrors the request-refresh pattern; there is no
+     * periodic polling for friends.
+     */
+    void refreshFriends(TuiSession session, TuiState state) {
+        if (friendsRefreshing) {
+            return;
+        }
+        friendsRefreshing = true;
+        FriendStore friendList = session.friendList();
+        friendList.markLoading();
+        Thread worker = new Thread(() -> {
+            try {
+                friendList.putFriends(session.friends().refreshFriends());
+                state.clampFriendSelection(friendList.friends().size());
+            } catch (SamvaadApiException e) {
+                friendList.putError(friendsListMessage(e));
+                state.setStatus(friendsListMessage(e));
+            } catch (RuntimeException e) {
+                friendList.putError("Could not load friends.");
+                state.setStatus("Could not load friends.");
+            } finally {
+                friendsRefreshing = false;
+            }
+        }, "samvaad-friends-refresh");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    /**
+     * Sends the pending new chat's first message through REST on a daemon
+     * worker. On success the authoritative response drives one logical
+     * reconciliation: merge the persisted message, refresh and replace
+     * the conversation list, select the authoritative conversation, and
+     * clear the pending state. The existing history and realtime
+     * machinery then takes over; nothing renders optimistically.
+     */
+    void sendFirstMessage(TuiSession session, TuiState state) {
+        TuiState.PendingChat pending = state.pendingNewChat();
+        String text = state.composer();
+        if (pending == null) {
+            return;
+        }
+        if (text.isBlank()) {
+            state.setStatus("Type a message first.");
+            return;
+        }
+        UUID requestId = UUID.randomUUID();
+        state.setStatus("Sending first message to " + pending.username() + "...");
+        Thread worker = new Thread(() -> {
+            try {
+                FirstMessage sent = session.friends()
+                        .sendFirstMessage(pending.username(), text, requestId);
+                ConversationStore store = session.store();
+                store.mergeMessages(sent.conversationId(), List.of(sent.message()));
+                List<ConversationEntry> fresh = session.conversationLoader().load();
+                store.replaceConversations(fresh);
+                int index = indexOfConversation(
+                        store.conversations(), sent.conversationId());
+                if (index >= 0) {
+                    state.showConversationsTab();
+                    state.selectConversation(index);
+                }
+                try {
+                    List<MessageEntry> history = session.historyLoader().load(
+                            sent.conversationId(), 0, HISTORY_LIMIT);
+                    store.putMessages(sent.conversationId(), history);
+                } catch (SamvaadApiException e) {
+                    store.putError(sent.conversationId(), userMessage(e));
+                }
+                state.clearComposer();
+                state.clearNewChat();
+                state.setStatus("Message sent to " + pending.username() + ".");
+            } catch (SamvaadApiException e) {
+                state.setStatus(firstMessageErrorMessage(e));
+                if (e.statusCode() == 403 || e.statusCode() == 404) {
+                    state.clearNewChat();
+                    state.focusConversations();
+                }
+            } catch (RuntimeException e) {
+                state.setStatus("Could not send message.");
+            }
+        }, "samvaad-first-message");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    static String friendsListMessage(SamvaadApiException e) {
+        if (e.kind() == SamvaadApiException.Kind.SERVER_UNAVAILABLE) {
+            return "Cannot reach server.";
+        }
+        if (e.kind() == SamvaadApiException.Kind.MALFORMED_RESPONSE) {
+            return "Malformed server response.";
+        }
+        if (e.kind() == SamvaadApiException.Kind.AUTHENTICATION_FAILED) {
+            return "Session expired. Restart and log in again.";
+        }
+        return "Could not load friends (HTTP " + e.statusCode() + ").";
+    }
+
+    static String firstMessageErrorMessage(SamvaadApiException e) {
+        if (e.kind() == SamvaadApiException.Kind.SERVER_UNAVAILABLE) {
+            return "Cannot reach server.";
+        }
+        if (e.kind() == SamvaadApiException.Kind.MALFORMED_RESPONSE) {
+            return "Malformed server response.";
+        }
+        if (e.kind() == SamvaadApiException.Kind.AUTHENTICATION_FAILED) {
+            return "Session expired. Restart and log in again.";
+        }
+        return switch (e.statusCode()) {
+            case 400 -> "Invalid message.";
+            case 403 -> "Messaging not allowed.";
+            case 404 -> "Friend no longer available.";
+            case 409 -> "Message conflict. Try again.";
+            default -> "Send message failed (HTTP " + e.statusCode() + ").";
+        };
     }
 
     private static FriendRequestEntry selectedIncoming(TuiSession session, TuiState state) {

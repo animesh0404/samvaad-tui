@@ -3,11 +3,13 @@ package com.samvaad.tui.bootstrap;
 import com.samvaad.tui.api.AuthApiClient;
 import com.samvaad.tui.api.ConversationApiClient;
 import com.samvaad.tui.api.FriendRequestApiClient;
+import com.samvaad.tui.api.FriendsApiClient;
 import com.samvaad.tui.api.SamvaadApiException;
 import com.samvaad.tui.api.UserLookupApiClient;
 import com.samvaad.tui.api.dto.AuthResponse;
 import com.samvaad.tui.api.dto.ConversationResponse;
 import com.samvaad.tui.api.dto.FriendRequestResponse;
+import com.samvaad.tui.api.dto.FriendResponse;
 import com.samvaad.tui.api.dto.MessageResponse;
 import com.samvaad.tui.api.dto.UserLookupResponse;
 import com.samvaad.tui.auth.Credentials;
@@ -16,8 +18,11 @@ import com.samvaad.tui.config.AppConfig;
 import com.samvaad.tui.config.AppConfigResolver;
 import com.samvaad.tui.model.ConversationEntry;
 import com.samvaad.tui.model.ConversationStore;
+import com.samvaad.tui.model.FirstMessage;
+import com.samvaad.tui.model.FriendEntry;
 import com.samvaad.tui.model.FriendRequestEntry;
 import com.samvaad.tui.model.FriendRequestStore;
+import com.samvaad.tui.model.FriendStore;
 import com.samvaad.tui.model.MessageEntry;
 import com.samvaad.tui.model.UserLookupEntry;
 import com.samvaad.tui.realtime.RealtimeClient;
@@ -25,6 +30,7 @@ import com.samvaad.tui.realtime.RealtimeException;
 import com.samvaad.tui.realtime.RealtimeManager;
 import com.samvaad.tui.session.AuthSession;
 import com.samvaad.tui.session.SessionState;
+import com.samvaad.tui.ui.ConversationListLoader;
 import com.samvaad.tui.ui.FriendService;
 import com.samvaad.tui.ui.MessageHistoryLoader;
 import com.samvaad.tui.ui.TuiException;
@@ -48,17 +54,19 @@ public final class AppBootstrap {
     private final ConversationApiClient conversationsApi;
     private final UserLookupApiClient userLookupApi;
     private final FriendRequestApiClient friendRequestApi;
+    private final FriendsApiClient friendsApi;
     private final RealtimeClient realtimeClient;
     private final TuiLauncher tui;
 
     public AppBootstrap(ConsoleIO io, AuthApiClient authApi, ConversationApiClient conversationsApi,
             UserLookupApiClient userLookupApi, FriendRequestApiClient friendRequestApi,
-            RealtimeClient realtimeClient, TuiLauncher tui) {
+            FriendsApiClient friendsApi, RealtimeClient realtimeClient, TuiLauncher tui) {
         this.io = Objects.requireNonNull(io, "io");
         this.authApi = Objects.requireNonNull(authApi, "authApi");
         this.conversationsApi = Objects.requireNonNull(conversationsApi, "conversationsApi");
         this.userLookupApi = Objects.requireNonNull(userLookupApi, "userLookupApi");
         this.friendRequestApi = Objects.requireNonNull(friendRequestApi, "friendRequestApi");
+        this.friendsApi = Objects.requireNonNull(friendsApi, "friendsApi");
         this.realtimeClient = Objects.requireNonNull(realtimeClient, "realtimeClient");
         this.tui = Objects.requireNonNull(tui, "tui");
     }
@@ -113,6 +121,9 @@ public final class AppBootstrap {
                 new RealtimeManager(realtimeClient, config.serverUrl(), auth.accessToken(), store, history);
         FriendRequestStore friendStore = new FriendRequestStore();
         FriendService friends = friendService(config.serverUrl(), auth.accessToken());
+        FriendStore friendList = new FriendStore();
+        ConversationListLoader conversationLoader = () ->
+                loadConversations(config.serverUrl(), auth.accessToken());
         try {
             realtime.connect();
         } catch (RealtimeException e) {
@@ -120,7 +131,7 @@ public final class AppBootstrap {
         }
         TuiSession tuiSession =
                 new TuiSession(config.username(), config.serverUrl(), store, history, realtime,
-                        friendStore, friends);
+                        friendStore, friends, friendList, conversationLoader);
         int tuiExit = 0;
         try {
             tui.launch(tuiSession);
@@ -218,6 +229,23 @@ public final class AppBootstrap {
             public FriendRequestEntry cancel(UUID requestId) {
                 return FriendRequestEntry.from(
                         friendRequestApi.cancel(serverUrl, accessToken, requestId));
+            }
+
+            @Override
+            public List<FriendEntry> refreshFriends() {
+                List<FriendResponse> responses =
+                        friendsApi.listFriends(serverUrl, accessToken);
+                List<FriendEntry> entries = new ArrayList<>(responses.size());
+                for (FriendResponse response : responses) {
+                    entries.add(FriendEntry.from(response));
+                }
+                return entries;
+            }
+
+            @Override
+            public FirstMessage sendFirstMessage(String username, String content, UUID requestId) {
+                return FirstMessage.from(conversationsApi.sendFirstMessage(
+                        serverUrl, accessToken, username, content, requestId));
             }
         };
     }

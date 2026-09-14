@@ -42,6 +42,22 @@ public final class TuiState {
         OUTGOING
     }
 
+    /**
+     * Active tab of the left sidebar in the CHAT view.
+     */
+    public enum SidebarTab {
+        CONVERSATIONS,
+        FRIENDS
+    }
+
+    /**
+     * A friend selected for starting a new chat. Holds only the
+     * friend's authoritative identity from the friends list; it never
+     * represents a server conversation.
+     */
+    public record PendingChat(UUID userId, String username) {
+    }
+
     static final int MAX_COMPOSER_LENGTH = 200;
     static final int MAX_SEARCH_LENGTH = 32;
 
@@ -56,6 +72,9 @@ public final class TuiState {
     private String searchInput = "";
     private RequestSection requestSection = RequestSection.INCOMING;
     private int requestSelectedIndex;
+    private SidebarTab sidebarTab = SidebarTab.CONVERSATIONS;
+    private int friendSelectedIndex;
+    private PendingChat pendingNewChat;
 
     public Focus focus() {
         return focus;
@@ -97,12 +116,20 @@ public final class TuiState {
         }
     }
 
+    public void selectConversation(int index) {
+        selectedIndex = Math.max(0, index);
+    }
+
     public void toggleFocus() {
         focus = focus == Focus.CONVERSATIONS ? Focus.COMPOSER : Focus.CONVERSATIONS;
     }
 
     public void focusConversations() {
         focus = Focus.CONVERSATIONS;
+    }
+
+    public void focusComposer() {
+        focus = Focus.COMPOSER;
     }
 
     public void appendToComposer(char c) {
@@ -148,11 +175,13 @@ public final class TuiState {
     public void enterSearch() {
         view = View.SEARCH;
         searchFocus = SearchFocus.INPUT;
+        pendingNewChat = null;
     }
 
     public void enterRequests() {
         view = View.REQUESTS;
         requestSelectedIndex = 0;
+        pendingNewChat = null;
     }
 
     public void exitToChat() {
@@ -225,5 +254,67 @@ public final class TuiState {
         } else {
             requestSelectedIndex = Math.min(requestSelectedIndex, count - 1);
         }
+    }
+
+    public SidebarTab sidebarTab() {
+        return sidebarTab;
+    }
+
+    public void showConversationsTab() {
+        sidebarTab = SidebarTab.CONVERSATIONS;
+    }
+
+    public void showFriendsTab() {
+        sidebarTab = SidebarTab.FRIENDS;
+        friendSelectedIndex = 0;
+    }
+
+    public void selectPreviousTab() {
+        if (sidebarTab == SidebarTab.FRIENDS) {
+            sidebarTab = SidebarTab.CONVERSATIONS;
+        }
+    }
+
+    public void selectNextTab() {
+        if (sidebarTab == SidebarTab.CONVERSATIONS) {
+            sidebarTab = SidebarTab.FRIENDS;
+            friendSelectedIndex = 0;
+        }
+    }
+
+    public int friendSelectedIndex() {
+        return friendSelectedIndex;
+    }
+
+    public void selectFriendUp(int count) {
+        if (count > 0) {
+            friendSelectedIndex = Math.max(0, friendSelectedIndex - 1);
+        }
+    }
+
+    public void selectFriendDown(int count) {
+        if (count > 0) {
+            friendSelectedIndex = Math.min(count - 1, friendSelectedIndex + 1);
+        }
+    }
+
+    public void clampFriendSelection(int count) {
+        if (count <= 0) {
+            friendSelectedIndex = 0;
+        } else {
+            friendSelectedIndex = Math.min(friendSelectedIndex, count - 1);
+        }
+    }
+
+    public PendingChat pendingNewChat() {
+        return pendingNewChat;
+    }
+
+    public void startNewChat(UUID userId, String username) {
+        pendingNewChat = new PendingChat(userId, username);
+    }
+
+    public void clearNewChat() {
+        pendingNewChat = null;
     }
 }

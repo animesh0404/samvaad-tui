@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import com.samvaad.tui.api.AuthApiClient;
 import com.samvaad.tui.api.ConversationApiClient;
 import com.samvaad.tui.api.FriendRequestApiClient;
+import com.samvaad.tui.api.FriendsApiClient;
 import com.samvaad.tui.api.HttpResult;
 import com.samvaad.tui.api.HttpTransport;
 import com.samvaad.tui.api.UserLookupApiClient;
@@ -22,7 +23,8 @@ class SamvaadTuiCommandTest {
                 new AppBootstrap(new NoopConsoleIO(), new AuthApiClient(new UnusedTransport()),
                         new ConversationApiClient(new UnusedTransport()),
                         new UserLookupApiClient(new UnusedTransport()),
-                        new FriendRequestApiClient(new UnusedTransport()), new FakeRealtimeClient(),
+                        new FriendRequestApiClient(new UnusedTransport()),
+                        new FriendsApiClient(new UnusedTransport()), new FakeRealtimeClient(),
                         (session) -> { }));
         new CommandLine(command).parseArgs(args);
         return command;

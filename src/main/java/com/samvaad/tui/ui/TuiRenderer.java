@@ -8,8 +8,10 @@ import com.googlecode.lanterna.graphics.TextGraphics;
 import com.googlecode.lanterna.screen.Screen;
 import com.samvaad.tui.model.ConversationEntry;
 import com.samvaad.tui.model.ConversationStore;
+import com.samvaad.tui.model.FriendEntry;
 import com.samvaad.tui.model.FriendRequestEntry;
 import com.samvaad.tui.model.FriendRequestStore;
+import com.samvaad.tui.model.FriendStore;
 import com.samvaad.tui.model.MessageEntry;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -29,7 +31,7 @@ public final class TuiRenderer {
     static final int MIN_ROWS = 12;
 
     private static final String STATUS_HINTS =
-            "Up/Down select - Tab focus - Enter open - / search - r requests - ? help - F10 quit";
+            "Up/Down select - Left/Right tabs - Tab focus - Enter open - / search - ? help - F10 quit";
 
     static final DateTimeFormatter MESSAGE_TIME = DateTimeFormatter.ofPattern("MM-dd HH:mm");
 
@@ -40,6 +42,12 @@ public final class TuiRenderer {
 
     public void render(Screen screen, TuiState state, ConversationStore store,
             String username, String serverUrl, FriendRequestStore friendStore) {
+        render(screen, state, store, username, serverUrl, friendStore, new FriendStore());
+    }
+
+    public void render(Screen screen, TuiState state, ConversationStore store,
+            String username, String serverUrl, FriendRequestStore friendStore,
+            FriendStore friendList) {
         TerminalSize size = screen.getTerminalSize();
         int cols = size.getColumns();
         int rows = size.getRows();
@@ -56,7 +64,8 @@ public final class TuiRenderer {
         int sideWidth = Math.max(20, Math.min(30, cols / 3));
         List<ConversationEntry> conversations = store.conversations();
         boolean listFocused = state.focus() == TuiState.Focus.CONVERSATIONS;
-        drawSidebar(tg, state, conversations, sideWidth, panelTop, panelBottom, listFocused);
+        drawSidebar(tg, state, conversations, friendList.friends(), sideWidth, panelTop,
+                panelBottom, listFocused);
         if (state.view() == TuiState.View.SEARCH) {
             drawSearch(tg, screen, state, friendStore, sideWidth, cols, panelTop, panelBottom);
         } else if (state.view() == TuiState.View.REQUESTS) {
@@ -91,15 +100,21 @@ public final class TuiRenderer {
     }
 
     private void drawSidebar(TextGraphics tg, TuiState state,
-            List<ConversationEntry> conversations, int width, int top, int bottom,
-            boolean focused) {
+            List<ConversationEntry> conversations, List<FriendEntry> friends, int width, int top,
+            int bottom, boolean focused) {
         drawBox(tg, 0, top, width, bottom - top + 1, " Conversations ", focused);
+        drawSidebarTabs(tg, state, width, top);
+        int firstRow = top + 2;
+        if (state.sidebarTab() == TuiState.SidebarTab.FRIENDS) {
+            drawFriendList(tg, state, friends, width, firstRow, bottom);
+            return;
+        }
         if (conversations.isEmpty()) {
-            tg.putString(1, top + 1, truncate("  (no conversations)", width - 2));
+            tg.putString(1, firstRow, truncate("  (no conversations)", width - 2));
             return;
         }
         for (int i = 0; i < conversations.size(); i++) {
-            int row = top + 1 + i;
+            int row = firstRow + i;
             if (row >= bottom) {
                 break;
             }
@@ -114,10 +129,66 @@ public final class TuiRenderer {
         }
     }
 
+    private void drawSidebarTabs(TextGraphics tg, TuiState state, int width, int top) {
+        boolean friendsActive = state.sidebarTab() == TuiState.SidebarTab.FRIENDS;
+        int col = 1;
+        col = putTabSegment(tg, "> CONVERSATIONS", !friendsActive, col, top + 1, width);
+        col = putTabSegment(tg, " | ", false, col, top + 1, width);
+        putTabSegment(tg, friendsActive ? "> FRIENDS" : "  FRIENDS", friendsActive, col, top + 1,
+                width);
+    }
+
+    private static int putTabSegment(TextGraphics tg, String text, boolean active, int col,
+            int row, int width) {
+        int max = Math.max(0, width - 1 - col);
+        String visible = truncate(text, max);
+        if (visible.isEmpty()) {
+            return col;
+        }
+        if (active) {
+            tg.putString(col, row, visible, SGR.REVERSE);
+        } else {
+            tg.putString(col, row, visible);
+        }
+        return col + visible.length();
+    }
+
+    private void drawFriendList(TextGraphics tg, TuiState state, List<FriendEntry> friends,
+            int width, int firstRow, int bottom) {
+        if (friends.isEmpty()) {
+            tg.putString(1, firstRow, truncate("  (no friends yet)", width - 2));
+            return;
+        }
+        for (int i = 0; i < friends.size(); i++) {
+            int row = firstRow + i;
+            if (row >= bottom) {
+                break;
+            }
+            boolean selected = i == state.friendSelectedIndex();
+            String entry = (selected ? "> " : "  ") + friends.get(i).username();
+            entry = truncate(entry, width - 2);
+            if (selected) {
+                tg.putString(1, row, padRight(entry, width - 2), SGR.REVERSE);
+            } else {
+                tg.putString(1, row, padRight(entry, width - 2));
+            }
+        }
+    }
+
     private void drawChat(TextGraphics tg, TuiState state, ConversationStore store,
             List<ConversationEntry> conversations, int left, int cols, int top, int bottom,
             boolean focused) {
         int width = cols - left;
+        if (state.pendingNewChat() != null) {
+            drawBox(tg, left, top, width, bottom - top + 1, " New chat ", focused);
+            tg.putString(left + 1, top + 1,
+                    truncate("New chat with " + state.pendingNewChat().username(), width - 2));
+            if (top + 2 < bottom) {
+                tg.putString(left + 1, top + 2,
+                        truncate("Type the first message below, Enter to send.", width - 2));
+            }
+            return;
+        }
         if (conversations.isEmpty()) {
             drawBox(tg, left, top, width, bottom - top + 1, " Conversation ", focused);
             tg.putString(left + 1, top + 1, truncate("No conversations yet.", width - 2));
@@ -341,6 +412,7 @@ public final class TuiRenderer {
     private void drawHelp(TextGraphics tg, int cols, int rows) {
         List<String> lines = List.of(
                 "Up/Down or k/j  Select conversation",
+                "Left/Right      Switch Conversations/Friends tabs",
                 "Tab             Move focus (list / composer)",
                 "Enter           Open conversation / send message",
                 "/               Search user by exact username",
@@ -353,7 +425,9 @@ public final class TuiRenderer {
                 "Enter sends the friend request, Esc back.",
                 "In requests: Tab section, Up/Down select,",
                 "a accept, x reject, c cancel, Enter primary,",
-                "g refresh, Esc or q back.");
+                "g refresh, Esc or q back.",
+                "In friends: Left/Right tabs, Up/Down select,",
+                "Enter open chat, g refresh, Esc back.");
         int contentWidth = lines.stream().mapToInt(String::length).max().orElse(0);
         int width = Math.min(cols - 2, contentWidth + HELP_HORIZONTAL_PADDING * 2 + 2);
         // Only pad vertically when the terminal fits the padded box;

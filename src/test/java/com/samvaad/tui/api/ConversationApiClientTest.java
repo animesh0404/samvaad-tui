@@ -241,4 +241,153 @@ class ConversationApiClientTest {
 
         assertEquals(SamvaadApiException.Kind.MALFORMED_RESPONSE, e.kind());
     }
+
+    private static final UUID FIRST_REQUEST_ID =
+            UUID.fromString("22222222-2222-2222-2222-222222222222");
+
+    private static final String FIRST_MESSAGE_JSON = "{"
+            + "\"messageId\":\"11111111-1111-1111-1111-111111111111\","
+            + "\"conversationId\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\","
+            + "\"senderUserId\":\"99999999-9999-9999-9999-999999999999\","
+            + "\"sequenceNumber\":1,\"content\":\"Hey Bob\","
+            + "\"serverTimestamp\":\"2026-09-14T10:20:00\","
+            + "\"requestId\":\"22222222-2222-2222-2222-222222222222\"}";
+
+    @Test
+    void firstMessageSendsExactPathAndBody() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(201, FIRST_MESSAGE_JSON);
+
+        MessageResponse response = new ConversationApiClient(transport)
+                .sendFirstMessage(BASE_URL, TOKEN, "bob", "Hey Bob", FIRST_REQUEST_ID);
+
+        FakeHttpTransport.Call call = transport.lastCall();
+        assertEquals(BASE_URL, call.baseUrl());
+        assertEquals("/api/conversations/direct/messages", call.path());
+        assertEquals(TOKEN, call.bearerToken());
+        assertTrue(call.body().contains("\"username\""), "body carries the username");
+        assertTrue(call.body().contains("bob"), "body carries the username");
+        assertTrue(call.body().contains("\"content\""), "body carries the content");
+        assertTrue(call.body().contains("Hey Bob"), "body carries the content");
+        assertTrue(call.body().contains("\"requestId\""), "body carries the request id");
+        assertTrue(call.body().contains(FIRST_REQUEST_ID.toString()), "request id is exact");
+        assertEquals(UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                response.conversationId());
+        assertEquals(1, response.sequenceNumber());
+        assertEquals(FIRST_REQUEST_ID, response.requestId());
+    }
+
+    @Test
+    void firstMessageReplayReturns200Response() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, FIRST_MESSAGE_JSON);
+
+        MessageResponse response = new ConversationApiClient(transport)
+                .sendFirstMessage(BASE_URL, TOKEN, "bob", "Hey Bob", FIRST_REQUEST_ID);
+
+        assertEquals(UUID.fromString("11111111-1111-1111-1111-111111111111"),
+                response.messageId());
+        assertEquals("Hey Bob", response.content());
+    }
+
+    @Test
+    void firstMessageBlankUsernameMakesNoHttpRequest() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+
+        SamvaadApiException e = assertThrows(SamvaadApiException.class, () ->
+                new ConversationApiClient(transport)
+                        .sendFirstMessage(BASE_URL, TOKEN, "  ", "Hey", FIRST_REQUEST_ID));
+
+        assertEquals(SamvaadApiException.Kind.HTTP_ERROR, e.kind());
+        assertEquals(400, e.statusCode());
+        assertTrue(transport.calls().isEmpty(), "blank username must not reach HTTP");
+    }
+
+    @Test
+    void firstMessageBlankContentMakesNoHttpRequest() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+
+        SamvaadApiException e = assertThrows(SamvaadApiException.class, () ->
+                new ConversationApiClient(transport)
+                        .sendFirstMessage(BASE_URL, TOKEN, "bob", "  ", FIRST_REQUEST_ID));
+
+        assertEquals(400, e.statusCode());
+        assertTrue(transport.calls().isEmpty(), "blank content must not reach HTTP");
+    }
+
+    @Test
+    void firstMessageNullRequestIdMakesNoHttpRequest() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+
+        SamvaadApiException e = assertThrows(SamvaadApiException.class, () ->
+                new ConversationApiClient(transport)
+                        .sendFirstMessage(BASE_URL, TOKEN, "bob", "Hey", null));
+
+        assertEquals(400, e.statusCode());
+        assertTrue(transport.calls().isEmpty(), "null request id must not reach HTTP");
+    }
+
+    @Test
+    void firstMessage401IsAuthenticationFailure() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(401, "{\"message\":\"unauthorized\"}");
+
+        SamvaadApiException e = assertThrows(SamvaadApiException.class, () ->
+                new ConversationApiClient(transport)
+                        .sendFirstMessage(BASE_URL, TOKEN, "bob", "Hey", FIRST_REQUEST_ID));
+
+        assertEquals(SamvaadApiException.Kind.AUTHENTICATION_FAILED, e.kind());
+        assertEquals(401, e.statusCode());
+    }
+
+    @Test
+    void firstMessage403IsHttpError() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(403, "{\"message\":\"forbidden\"}");
+
+        SamvaadApiException e = assertThrows(SamvaadApiException.class, () ->
+                new ConversationApiClient(transport)
+                        .sendFirstMessage(BASE_URL, TOKEN, "bob", "Hey", FIRST_REQUEST_ID));
+
+        assertEquals(SamvaadApiException.Kind.HTTP_ERROR, e.kind());
+        assertEquals(403, e.statusCode());
+    }
+
+    @Test
+    void firstMessage404IsHttpError() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(404, "{\"message\":\"User not found: ghost\"}");
+
+        SamvaadApiException e = assertThrows(SamvaadApiException.class, () ->
+                new ConversationApiClient(transport)
+                        .sendFirstMessage(BASE_URL, TOKEN, "ghost", "Hey", FIRST_REQUEST_ID));
+
+        assertEquals(SamvaadApiException.Kind.HTTP_ERROR, e.kind());
+        assertEquals(404, e.statusCode());
+    }
+
+    @Test
+    void firstMessage409IsHttpError() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(409, "{\"message\":\"Request ID already used\"}");
+
+        SamvaadApiException e = assertThrows(SamvaadApiException.class, () ->
+                new ConversationApiClient(transport)
+                        .sendFirstMessage(BASE_URL, TOKEN, "bob", "Hey", FIRST_REQUEST_ID));
+
+        assertEquals(SamvaadApiException.Kind.HTTP_ERROR, e.kind());
+        assertEquals(409, e.statusCode());
+    }
+
+    @Test
+    void firstMessageMalformedBodyIsMalformedResponse() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(201, "{\"content\":\"Hey\"}");
+
+        SamvaadApiException e = assertThrows(SamvaadApiException.class, () ->
+                new ConversationApiClient(transport)
+                        .sendFirstMessage(BASE_URL, TOKEN, "bob", "Hey", FIRST_REQUEST_ID));
+
+        assertEquals(SamvaadApiException.Kind.MALFORMED_RESPONSE, e.kind());
+    }
 }

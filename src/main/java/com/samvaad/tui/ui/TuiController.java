@@ -23,6 +23,11 @@ import java.util.List;
  * Up/Down or k/j select, 'a' accepts, 'x' rejects, 'c' cancels,
  * Enter runs the primary action (accept/cancel), 'g' refreshes, and
  * Esc or 'q' returns to chat.
+ *
+ * <p>Friends tab: Left/Right switches the CONVERSATIONS/FRIENDS tabs
+ * while the sidebar is focused. In FRIENDS, Up/Down or k/j select,
+ * Enter opens the selected friend's chat, 'g' refreshes the list,
+ * Esc returns focus per existing conventions.
  */
 public final class TuiController {
 
@@ -35,7 +40,10 @@ public final class TuiController {
         ACCEPT_REQUEST,
         REJECT_REQUEST,
         CANCEL_REQUEST,
-        REFRESH_REQUESTS
+        REFRESH_REQUESTS,
+        REFRESH_FRIENDS,
+        SELECT_FRIEND,
+        SEND_FIRST_MESSAGE
     }
 
     public Action handle(KeyStroke key, TuiState state, List<ConversationEntry> conversations) {
@@ -44,6 +52,11 @@ public final class TuiController {
 
     public Action handle(KeyStroke key, TuiState state, List<ConversationEntry> conversations,
             int incomingCount, int outgoingCount) {
+        return handle(key, state, conversations, incomingCount, outgoingCount, 0);
+    }
+
+    public Action handle(KeyStroke key, TuiState state, List<ConversationEntry> conversations,
+            int incomingCount, int outgoingCount, int friendCount) {
         if (key == null) {
             return Action.CONTINUE;
         }
@@ -80,16 +93,34 @@ public final class TuiController {
             return Action.CONTINUE;
         }
         if (key.getKeyType() == KeyType.Escape) {
+            if (state.pendingNewChat() != null) {
+                state.clearNewChat();
+            }
             state.focusConversations();
             return Action.CONTINUE;
         }
         if (state.focus() == TuiState.Focus.CONVERSATIONS) {
-            return handleConversationKeys(key, state, conversations);
+            return handleConversationKeys(key, state, conversations, friendCount);
         }
         return handleComposerKeys(key, state);
     }
 
-    private Action handleConversationKeys(KeyStroke key, TuiState state, List<ConversationEntry> conversations) {
+    private Action handleConversationKeys(KeyStroke key, TuiState state,
+            List<ConversationEntry> conversations, int friendCount) {
+        if (key.getKeyType() == KeyType.ArrowLeft) {
+            state.selectPreviousTab();
+            return Action.CONTINUE;
+        }
+        if (key.getKeyType() == KeyType.ArrowRight) {
+            state.selectNextTab();
+            if (state.sidebarTab() == TuiState.SidebarTab.FRIENDS) {
+                return Action.REFRESH_FRIENDS;
+            }
+            return Action.CONTINUE;
+        }
+        if (state.sidebarTab() == TuiState.SidebarTab.FRIENDS) {
+            return handleFriendKeys(key, state, friendCount);
+        }
         int count = conversations.size();
         if (key.getKeyType() == KeyType.ArrowUp || isCharacter(key, 'k')) {
             state.selectUp(count);
@@ -124,11 +155,49 @@ public final class TuiController {
         return Action.CONTINUE;
     }
 
+    private Action handleFriendKeys(KeyStroke key, TuiState state, int friendCount) {
+        if (key.getKeyType() == KeyType.ArrowUp || isCharacter(key, 'k')) {
+            state.selectFriendUp(friendCount);
+            return Action.CONTINUE;
+        }
+        if (key.getKeyType() == KeyType.ArrowDown || isCharacter(key, 'j')) {
+            state.selectFriendDown(friendCount);
+            return Action.CONTINUE;
+        }
+        if (isCharacter(key, '?')) {
+            state.toggleHelp();
+            return Action.CONTINUE;
+        }
+        if (isCharacter(key, '/')) {
+            state.enterSearch();
+            state.setStatus("Search user by exact username.");
+            return Action.CONTINUE;
+        }
+        if (isCharacter(key, 'r')) {
+            state.enterRequests();
+            state.setStatus("Friend requests.");
+            return Action.REFRESH_REQUESTS;
+        }
+        if (isCharacter(key, 'g')) {
+            return Action.REFRESH_FRIENDS;
+        }
+        if (isCharacter(key, 'q')) {
+            return Action.QUIT;
+        }
+        if (key.getKeyType() == KeyType.Enter && friendCount > 0) {
+            return Action.SELECT_FRIEND;
+        }
+        return Action.CONTINUE;
+    }
+
     private Action handleComposerKeys(KeyStroke key, TuiState state) {
         if (key.getKeyType() == KeyType.Enter) {
             if (state.composer().isBlank()) {
                 state.setStatus("Type a message first.");
                 return Action.CONTINUE;
+            }
+            if (state.pendingNewChat() != null) {
+                return Action.SEND_FIRST_MESSAGE;
             }
             return Action.SEND;
         }

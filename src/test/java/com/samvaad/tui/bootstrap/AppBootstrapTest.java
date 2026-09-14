@@ -9,17 +9,21 @@ import com.samvaad.tui.api.AuthApiClient;
 import com.samvaad.tui.api.ConversationApiClient;
 import com.samvaad.tui.api.FakeHttpTransport;
 import com.samvaad.tui.api.FriendRequestApiClient;
+import com.samvaad.tui.api.FriendsApiClient;
 import com.samvaad.tui.api.UserLookupApiClient;
 import com.samvaad.tui.auth.TestTokens;
 import com.samvaad.tui.realtime.FakeRealtimeClient;
 import com.samvaad.tui.realtime.RealtimeException;
 import com.samvaad.tui.cli.CliOptions;
+import com.samvaad.tui.model.FirstMessage;
+import com.samvaad.tui.model.FriendEntry;
 import com.samvaad.tui.ui.TuiException;
 import com.samvaad.tui.ui.TuiLauncher;
 import com.samvaad.tui.ui.TuiSession;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -41,7 +45,8 @@ class AppBootstrapTest {
             TuiLauncher tui) {
         return new AppBootstrap(io, new AuthApiClient(transport),
                 new ConversationApiClient(transport), new UserLookupApiClient(transport),
-                new FriendRequestApiClient(transport), realtime, tui);
+                new FriendRequestApiClient(transport), new FriendsApiClient(transport),
+                realtime, tui);
     }
 
     private static void queueLoginListLogout(FakeHttpTransport transport) {
@@ -279,6 +284,62 @@ class AppBootstrapTest {
         assertEquals("/api/users/lookup?username=bob", transport.calls().get(2).path());
         assertEquals(ACCESS, transport.calls().get(2).bearerToken(),
                 "seam forwards the session token without exposing it to the UI");
+    }
+
+    @Test
+    void launchesTuiWithFriendsListAndFirstMessageSeam() {
+        FakeConsoleIO io = new FakeConsoleIO();
+        io.setPassword("s3cret".toCharArray());
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, AUTH_JSON);
+        transport.addJson(200, LIST_JSON);
+        transport.addJson(200, "[{\"userId\":\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\","
+                + "\"username\":\"bob\"}]");
+        transport.addJson(201, "{\"messageId\":\"11111111-1111-1111-1111-111111111111\","
+                + "\"conversationId\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\","
+                + "\"senderUserId\":\"11111111-1111-1111-1111-111111111111\","
+                + "\"sequenceNumber\":1,\"content\":\"Hey Bob\","
+                + "\"serverTimestamp\":\"2026-09-14T10:20:00\","
+                + "\"requestId\":\"22222222-2222-2222-2222-222222222222\"}");
+        transport.addJson(200, "");
+        RecordingTui tui = new RecordingTui();
+        var friends = new Object() {
+            List<FriendEntry> entries;
+        };
+        var first = new Object() {
+            FirstMessage sent;
+        };
+        var requestIds = new Object() {
+            UUID requestId;
+        };
+
+        int exit = bootstrap(io, transport, new FakeRealtimeClient(), (session) -> {
+            tui.launch(session);
+            friends.entries = session.friends().refreshFriends();
+            requestIds.requestId = UUID.randomUUID();
+            first.sent = session.friends()
+                    .sendFirstMessage("bob", "Hey Bob", requestIds.requestId);
+        }).run(new CliOptions("http://localhost:8080", "alice"));
+
+        assertEquals(0, exit);
+        assertTrue(tui.session.friendList() != null, "session carries the friends store");
+
+        assertEquals(1, friends.entries.size());
+        assertEquals("bob", friends.entries.get(0).username());
+        assertEquals("/api/friends", transport.calls().get(2).path());
+        assertEquals(ACCESS, transport.calls().get(2).bearerToken(),
+                "friends seam forwards the session token without exposing it to the UI");
+
+        assertEquals(UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                first.sent.conversationId());
+        assertEquals("Hey Bob", first.sent.message().content());
+        assertEquals("/api/conversations/direct/messages", transport.calls().get(3).path());
+        assertEquals(ACCESS, transport.calls().get(3).bearerToken());
+        String body = transport.calls().get(3).body();
+        assertTrue(body.contains("\"username\"") && body.contains("bob"),
+                "first message addresses the friend by username");
+        assertTrue(body.contains(requestIds.requestId.toString()),
+                "first message carries the caller request id");
     }
 
     @Test

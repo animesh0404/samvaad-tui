@@ -152,4 +152,56 @@ class ConversationStoreTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new ConversationStore(ME, null));
     }
+
+    @Test
+    void replaceConversationsPreservesFreshOrder() {
+        ConversationStore store = new ConversationStore(ME,
+                List.of(entry(CHARLIE_ID, "charlie"), entry(ALICE_ID, "alice")));
+
+        store.replaceConversations(
+                List.of(entry(ALICE_ID, "alice"), entry(CHARLIE_ID, "charlie")));
+
+        List<ConversationEntry> conversations = store.conversations();
+        assertEquals(ALICE_ID, conversations.get(0).conversationId());
+        assertEquals(CHARLIE_ID, conversations.get(1).conversationId());
+    }
+
+    @Test
+    void replaceConversationsRegistersNewIdsAsNotLoaded() {
+        UUID freshId = UUID.randomUUID();
+        ConversationStore store = new ConversationStore(ME, List.of(entry(ALICE_ID, "alice")));
+        store.markLoading(ALICE_ID);
+        store.putMessages(ALICE_ID, List.of(new MessageEntry(
+                UUID.randomUUID(), ME, 1, "Hi", LocalDateTime.of(2026, 9, 14, 10, 0),
+                UUID.randomUUID())));
+
+        store.replaceConversations(List.of(entry(ALICE_ID, "alice"), entry(freshId, "bob")));
+
+        assertEquals(ConversationStore.LoadStatus.LOADED, store.statusOf(ALICE_ID),
+                "known conversation keeps its history state");
+        assertEquals(ConversationStore.LoadStatus.NOT_LOADED, store.statusOf(freshId),
+                "newly seen conversation loads lazily through the existing mechanism");
+        assertEquals(1, store.messagesOf(ALICE_ID).size());
+    }
+
+    @Test
+    void replaceConversationsPrunesObsoleteState() {
+        ConversationStore store = new ConversationStore(ME,
+                List.of(entry(ALICE_ID, "alice"), entry(CHARLIE_ID, "charlie")));
+        store.markLoading(ALICE_ID);
+        store.putMessages(ALICE_ID, List.of(new MessageEntry(
+                UUID.randomUUID(), ME, 1, "Hi", LocalDateTime.of(2026, 9, 14, 10, 0),
+                UUID.randomUUID())));
+        store.markLoading(CHARLIE_ID);
+        store.putError(CHARLIE_ID, "gone");
+
+        store.replaceConversations(List.of(entry(ALICE_ID, "alice")));
+
+        assertEquals(1, store.conversations().size());
+        assertEquals(ConversationStore.LoadStatus.NOT_LOADED, store.statusOf(CHARLIE_ID),
+                "pruned conversation falls back to default state");
+        assertTrue(store.messagesOf(CHARLIE_ID).isEmpty());
+        assertEquals(0, store.highestLoadedSequence(CHARLIE_ID));
+        assertEquals(1, store.messagesOf(ALICE_ID).size(), "kept conversation keeps messages");
+    }
 }

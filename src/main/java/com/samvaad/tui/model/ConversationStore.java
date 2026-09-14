@@ -2,9 +2,11 @@ package com.samvaad.tui.model;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -50,6 +52,29 @@ public final class ConversationStore {
 
     public synchronized List<ConversationEntry> conversations() {
         return List.copyOf(conversations);
+    }
+
+    /**
+     * Replaces the conversation list wholesale with a freshly loaded
+     * authoritative server list, preserving the exact server-provided
+     * order. Newly seen conversation IDs are registered as NOT_LOADED
+     * so history loads lazily through the existing mechanism; message
+     * state, high-water marks, and load state for conversation IDs no
+     * longer present are pruned. Used after first-message creation,
+     * when the server owns a conversation the client has never seen.
+     */
+    public synchronized void replaceConversations(List<ConversationEntry> fresh) {
+        Set<UUID> seen = new HashSet<>();
+        for (ConversationEntry entry : fresh) {
+            seen.add(entry.conversationId());
+            loadStatuses.putIfAbsent(entry.conversationId(), LoadStatus.NOT_LOADED);
+        }
+        conversations.clear();
+        conversations.addAll(fresh);
+        messages.keySet().retainAll(seen);
+        highestLoadedSequence.keySet().retainAll(seen);
+        loadStatuses.keySet().retainAll(seen);
+        loadErrors.keySet().retainAll(seen);
     }
 
     public synchronized LoadStatus statusOf(UUID conversationId) {
