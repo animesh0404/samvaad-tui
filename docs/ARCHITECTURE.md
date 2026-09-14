@@ -35,23 +35,17 @@ The UI must not construct HTTP requests or STOMP frames directly.
 
 ## TUI shell architecture
 
-Phase 3 established the Lanterna UI boundary. Phase 4 replaced preview data with server-backed state. Phase 5 adds realtime transport and message sending. Phase 6 adds user lookup and pending friend-request workflows. Phase 7 adds an authoritative Friends tab and first-chat workflow:
+Phase 3 established the Lanterna UI boundary. Phase 4 replaced preview data with server-backed state. Phase 5 adds realtime transport and message sending. Phase 6 adds user lookup and pending friend-request workflows. Phase 7 adds an authoritative Friends tab, first-chat workflow, automatic conversation discovery, and universal manual refresh:
 
 ```text
 AppBootstrap
     |
     +--> AuthApiClient -------------> Samvaad Server
-    |
     +--> ConversationApiClient ----> Samvaad Server
-    |
     +--> UserLookupApiClient ------> Samvaad Server
-    |
     +--> FriendRequestApiClient ---> Samvaad Server
     +--> FriendsApiClient ---------> Samvaad Server
-    |
-    +--> RealtimeManager
-    |       |
-    |       +--> RealtimeClient ----> WebSocket/STOMP --> Samvaad Server
+    +--> RealtimeManager ----------> WebSocket/STOMP --> Samvaad Server
     |
     +--> TuiSession
              |
@@ -71,23 +65,28 @@ AppBootstrap
 
 `ConversationApiClient` implements the verified conversation-list and message-history reads plus the verified first-message REST operation. There is no single-conversation lookup endpoint and no dedicated conversation-create endpoint; the client does not invent either.
 
-`ConversationStore` preserves server-provided conversation ordering and message sequence ordering. It separates the server-provided `lastSequenceNumber` high-water mark from `highestLoadedSequence`, which records what the client has actually loaded locally. Realtime messages and authoritative REST first-message responses are merged by server-owned message identity and sequence.
+`ConversationStore` preserves server-provided conversation ordering and message sequence ordering. It separates the server-provided `lastSequenceNumber` high-water mark from `highestLoadedSequence`. Realtime messages and authoritative REST first-message responses are merged by server-owned message identity and sequence. Authoritative conversation-list replacement is also used by background discovery and manual refresh.
 
-`FriendRequestStore` is deliberately separate from `ConversationStore`. It holds the latest exact-username lookup result and pending incoming/outgoing requests, with independent loading/error state and exact server ordering.
+`FriendRequestStore` is deliberately separate from `ConversationStore`. `FriendStore` is a separate authoritative friends-list store populated only by `GET /api/friends` and preserving server order.
 
-`FriendStore` is a separate authoritative friends-list store. It is populated only by `GET /api/friends`, preserves the server's username-ascending order, and is never derived from friend requests, conversations, or messages.
+When a friend is selected, `TuiApp` resolves an existing conversation by the friend's authoritative `userId`. If none is known, the UI enters a pending-new-chat state and sends the first message through the verified direct-message REST operation. After success, the authoritative response drives conversation reconciliation, selection, history, and realtime handoff.
 
-When a friend is selected, `TuiApp` resolves an existing conversation by the friend's authoritative `userId`. If one is known, the existing conversation/history/realtime flow is reused. If none is known, the UI enters a pending-new-chat state. The first message is sent through `POST /api/conversations/direct/messages` using the friend's username and a fresh client-generated UUID `requestId`; the server creates the conversation when needed.
+## Refresh and discovery architecture
 
-After a successful first-message request, the returned message and `conversationId` are authoritative. The TUI merges the persisted message, refreshes the conversation list, replaces the local list with server-provided ordering, selects the returned conversation, tops up its history, and then lets the existing realtime subscription machinery take over. The TUI never fabricates conversation metadata or message identity/sequence/timestamps.
+Phase 7C adds two refresh mechanisms over the existing server-backed loaders:
 
-History loading, user lookup, friend-request HTTP operations, Friends HTTP operations, and first-message HTTP operations are initiated from `TuiApp` on daemon workers so terminal input/rendering is not blocked. Realtime callbacks arrive on transport threads and update synchronized client state; the polling render loop repaints background changes while the UI is idle.
+- **Automatic conversation discovery:** while the fullscreen TUI is active, `TuiApp` checks every 5 seconds and, when due, starts one guarded daemon worker using the existing `ConversationListLoader`. This is an authoritative list refresh, not a message polling path. Overlapping refreshes are prevented. A failed background refresh leaves the visible conversation list unchanged.
+- **Universal manual refresh:** `F5` is handled centrally by `TuiController`. It dispatches to the existing refresh mechanism for the active server-backed view: conversations, Friends, friend requests, or exact-username search. Manual refresh is asynchronous and does not restart the TUI or steal focus. Existing `g` refresh shortcuts remain additive where established.
+
+Conversation selection is preserved by `conversationId` across authoritative list reordering. A newly discovered conversation is inserted according to server ordering but is not automatically selected or opened. Once the user selects it, the existing history loader and realtime subscription machinery takes over. Polling therefore solves conversation discovery without creating a second realtime path.
+
+Refresh workers are daemon threads and use the existing `TuiApp` lifecycle model; no scheduler/executor subsystem is introduced.
 
 ## HTTP architecture
 
 `AuthApiClient`, `ConversationApiClient`, `UserLookupApiClient`, `FriendRequestApiClient`, and `FriendsApiClient` depend on `HttpTransport`. `JdkHttpTransport` implements that boundary using `java.net.http.HttpClient`. Jackson handles JSON serialization/deserialization, including Java `LocalDateTime` values returned by the server.
 
-The conversation API client exposes the verified contracts:
+The verified conversation API remains:
 
 ```text
 GET  /api/conversations/direct?limit&offset
@@ -95,9 +94,7 @@ GET  /api/conversations/direct/{conversationId}/messages?afterSequence&limit
 POST /api/conversations/direct/messages
 ```
 
-The first-message operation is addressed by exact friend username and carries `username`, `content`, and a client-generated UUID `requestId`. The server returns the authoritative persisted message, including the authoritative `conversationId`. HTTP 201 and 200 are successful outcomes under the existing server idempotency contract.
-
-The Phase 6 social API clients expose:
+The verified social APIs remain:
 
 ```text
 GET  /api/users/lookup?username={username}
@@ -107,120 +104,34 @@ GET  /api/friend-requests/outgoing
 POST /api/friend-requests/{requestId}/accept
 POST /api/friend-requests/{requestId}/reject
 POST /api/friend-requests/{requestId}/cancel
+GET  /api/friends
 ```
 
-Phase 7 adds:
-
-```text
-GET /api/friends
-```
-
-`GET /api/friends` is authenticated, has no query parameters or body, returns safe `{userId, username}` friend records, returns `[]` for no friends, and provides deterministic username-ascending ordering. The TUI preserves that order and does not re-sort.
-
-User lookup is exact-username lookup; the server performs case-insensitive trimmed matching and returns one safe user record. There is no prefix, substring, fuzzy, or paginated user search contract.
-
-Friend-request request IDs and timestamps are server-owned. The client does not generate request IDs, idempotency keys, retries, or status transitions. Incoming and outgoing pending requests remain in server-provided newest-first order.
-
-Conversation paging is offset-based. Message history uses the server's sequence cursor: only messages with `sequenceNumber > afterSequence` are returned, in ascending sequence order. Initial history uses `afterSequence=0&limit=20`.
-
-The API layer preserves server ordering and does not sort by timestamps. Server timestamps are zone-less `LocalDateTime` values and are displayed without timezone conversion.
-
-## Social-state architecture
-
-```text
-GET /api/users/lookup --------------------> UserLookupEntry
-                                                |
-POST/GET/mutate /api/friend-requests ------> FriendRequestStore
-                                                |
-GET /api/friends -------------------------> FriendStore
-                                                |
-                                                v
-                                          TuiState / Renderer
-```
-
-`FriendService` is a token-free UI seam. `AppBootstrap` owns closures containing the authenticated access token and adapts API DTOs into UI model entries. The UI can request lookup, friend-request operations, friend-list refresh, and first-message sending without receiving a token.
-
-The Friends tab is refreshed when entered and through explicit `g` refresh. There is no Friends polling and no friend realtime subscription in Phase 7.
-
-Friendship is a domain relationship established by an accepted friend request, but the client consumes the dedicated server Friends API rather than reconstructing that relationship from request records. There is no client-side unfriend, block, friendship-status, or conversation creation-on-acceptance behavior.
+The TUI preserves server ordering and does not invent IDs, timestamps, sequence numbers, or status transitions.
 
 ## Realtime architecture
 
-Phase 5 introduces a deliberately small realtime boundary:
+The existing Phase 5 realtime boundary remains unchanged:
 
 ```text
 TuiApp / TuiController
         |
         v
- RealtimeManager
+ RealtimeManager -> RealtimeClient -> SpringRealtimeClient
         |
         v
- RealtimeClient
-        |
-        v
- SpringRealtimeClient
-        |
-        v
- WebSocket + STOMP
-        |
-        v
- Samvaad Server /ws
+ WebSocket + STOMP -> Samvaad Server /ws
 ```
 
-`SpringRealtimeClient` adapts Spring's `WebSocketStompClient` and standard WebSocket client to the server's verified STOMP contract. It is not a Spring Boot application and does not create an embedded server or application context.
-
-The client derives `ws://` or `wss://` from the configured HTTP(S) server URL and connects to `/ws`. STOMP CONNECT carries the same access JWT used by authenticated HTTP. The manager subscribes to `/topic/conversations/{conversationId}` and sends chat messages to `/app/chat.send`.
-
-The transport does not perform its own retries. `RealtimeManager` owns bounded reconnect policy. On an unexpected connection loss it reconnects with the same access token, restores the selected conversation subscription, and uses the HTTP history seam for catch-up from `highestLoadedSequence`.
-
-Incoming broadcasts are mapped to `MessageEntry` and merged into `ConversationStore` using server-owned message ID and sequence. The store deduplicates messages and preserves ascending sequence order. The client never generates message IDs, sequence numbers, timestamps, or sender identity.
-
-Normal subsequent sends remain non-optimistic. The client creates a fresh UUID `requestId`, sends the verified payload, and displays a pending `Sending...` state. The pending send becomes `Sent` only when an authoritative broadcast carrying the matching request ID is observed.
-
-The server's `/user/queue/errors` destination is intentionally not subscribed because that wiring was not established by the verified contract. Transport ERROR frames and session callbacks provide the currently supported error path.
+The manager subscribes to `/topic/conversations/{conversationId}` and sends to `/app/chat.send`. Reconnect remains bounded and uses HTTP history catch-up. Conversation polling is discovery-only; subsequent messages use the existing STOMP path.
 
 ## Authentication/session flow
 
-```text
-CLI
-  -> credentials
-  -> AuthApiClient
-  -> POST /api/auth/login
-  <- accessToken + refreshToken + expiresIn + sessionId
-  -> AuthSession(userId derived from JWT sub)
-  -> SessionState(AUTHENTICATED)
-  -> ConversationApiClient
-  -> conversation list
-  -> RealtimeManager.connect(accessToken)
-  -> token-free FriendService closure
-  -> TuiSession
-  -> fullscreen TUI
-  -> selected conversation / Friends workflow
-  -> history + realtime subscription / HTTP social operations
-  -> exit
-  -> realtime disconnect
-  -> AuthApiClient
-  -> POST /api/auth/logout
-  -> local SessionState cleared
-```
-
-Realtime disconnect happens before HTTP logout. The same authenticated session/JWT is used for both protocols and for authenticated social HTTP operations.
-
-## Session model
-
-`SessionState` represents authenticated versus unauthenticated client state. `AuthSession` contains the server-issued access token, refresh token, session ID, expiry duration, acquisition timestamp, and authenticated user id derived from the JWT `sub` claim.
-
-The client only decodes the JWT payload to obtain the server-defined user id for local sender attribution. It does not perform client-side JWT signature verification; authentication validity remains a server responsibility.
-
-Authentication state and realtime credentials are currently in memory only. There is no local token database or credential store.
+Login establishes the in-memory authenticated session, conversation state, realtime manager, and token-free social service. Realtime disconnect occurs before HTTP logout. The same server-issued access JWT is used for authenticated HTTP and realtime operations.
 
 ## Error handling
 
-The API layer must avoid exposing credentials or sensitive response bodies. Authentication/runtime failures are surfaced to the CLI as failure status `1`; usage/validation failures use status `2`. TUI history and social-operation failures are translated into explicit loading/error states while server logout still runs.
-
-Friend-request and Friends HTTP failures preserve the server status taxonomy at the API boundary without exposing response bodies. The Friends API maps 401 to authentication failure and other non-2xx responses to HTTP errors with the status preserved. First-message HTTP uses the same status-preserving boundary; its UI maps common 400/401/403/404/409 cases to concise status messages.
-
-Realtime errors are represented by token-free notices. Reconnect is bounded rather than infinite. The current server contract does not provide a verified client-visible `/user/queue/errors` subscription, so the TUI does not invent one.
+The API layer avoids exposing credentials or sensitive response bodies. Social and conversation refresh failures are surfaced through existing view-specific state/status handling. In particular, automatic conversation refresh failures do not clear the currently visible valid list; explicit F5 failures may surface a concise status message.
 
 ## Design principles
 
@@ -237,3 +148,5 @@ Realtime errors are represented by token-free notices. Reconnect is bounded rath
 11. Keep friendship state separate from conversation state.
 12. Do not infer or invent social relationships when the server provides an authoritative Friends API.
 13. Reuse the existing first-message conversation-creation contract rather than inventing a dedicated conversation-create API.
+14. Use one authoritative refresh mechanism per server-backed resource and expose universal manual refresh through central TUI dispatch.
+15. Never let background discovery steal user selection or focus.
