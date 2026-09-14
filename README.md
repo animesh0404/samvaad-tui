@@ -67,7 +67,10 @@ Behavior:
   and enters the full-screen Lanterna TUI.
 - Selecting a conversation lazily loads its initial message history on a worker
   thread so HTTP does not block terminal input/rendering.
-- Exiting the TUI logs out through the server and clears local session state.
+- Realtime is connected with the same authenticated access JWT and follows the
+  selected conversation subscription.
+- Exiting the TUI disconnects realtime first, then performs server logout and
+  clears local session state.
 
 Other useful commands:
 
@@ -87,13 +90,13 @@ is the primary V1 distribution mechanism.
 Phase 3 established the Lanterna-based full-screen terminal shell and its
 keyboard/rendering behavior.
 
-Key capabilities retained from Phase 3:
+Key capabilities retained:
 
 - full-screen alternate-terminal UI with header, conversation sidebar, chat panel, composer, and status line;
 - Up/Down or `k`/`j` conversation navigation;
 - navigation does not wrap at the list boundaries;
-- `Tab` focus switching;
-- `Enter` selection/composer interaction (message sending remains future work);
+- `Tab` focus switching with visible active-pane indication;
+- `Enter` selection/composer interaction;
 - `F1` or `?` help overlay;
 - `Esc` closes help/unfocuses the composer;
 - `F10`, `Ctrl+C`, or `q` from the conversation list exits;
@@ -105,7 +108,7 @@ Phase 3 implementation commit: `595b355`; subsequent fixes: `42e7f29`.
 
 ## Phase 4 — server-backed conversations and history
 
-Phase 4 replaces the Phase 3 preview inbox with real server-backed conversation
+Phase 4 replaced the Phase 3 preview inbox with real server-backed conversation
 and message-history data.
 
 Implemented:
@@ -123,11 +126,46 @@ Implemented:
 - nullable `otherParticipantUsername` has a client-side display fallback;
 - Phase 3 preview conversation/message classes removed.
 
-The Phase 4 client does **not** implement sending, realtime, friends/search,
-friend requests, local persistence, or new server endpoints. Message-history
-paging is supported by the API seam but no load-more UI is introduced yet.
-
 Phase 4 implementation commit: `9393514`.
+
+## Phase 5 — message sending and realtime
+
+Phase 5 adds server-backed message sending and realtime message delivery.
+
+Implemented:
+
+- Spring `WebSocketStompClient` behind a small `realtime` transport seam;
+- WebSocket URL derived from the configured HTTP(S) server URL to `/ws`;
+- STOMP CONNECT with `Authorization: Bearer <access-token>`;
+- per-conversation subscription at `/topic/conversations/{conversationId}`;
+- message send at `/app/chat.send`;
+- client-generated UUID `requestId` for send correlation/idempotency, with message ID, sequence, and timestamp remaining server-owned;
+- authoritative realtime broadcasts merged into `ConversationStore` by server message identity and sequence;
+- no optimistic message persistence/rendering;
+- pending sends transition from `Sending...` to `Sent` only when the matching authoritative broadcast is observed;
+- server-provided timestamps displayed for sent and received messages;
+- visible Tab focus between conversation and chat/composer panes;
+- bounded reconnect with the same access token, resubscription, and HTTP history catch-up from `highestLoadedSequence`;
+- realtime disconnect before the existing HTTP logout/revocation call;
+- background realtime/history changes repaint while the UI is idle through the polling render loop;
+- realtime transport errors remain token-free and user-safe.
+
+The server remains authoritative: the TUI does not generate message IDs,
+sequence numbers, timestamps, sender identity, or retry requests. There is
+no client-side optimistic message confirmation.
+
+The server's `/user/queue/errors` destination is intentionally not subscribed
+because that wiring was not established as part of the verified contract.
+Transport ERROR frames/session callbacks are surfaced instead. A silently
+dropped send therefore remains pending rather than being falsely marked sent.
+
+Phase 5 implementation commit: `97d01c9`.
+
+Phase 5 verification included `./gradlew clean test` with **131 tests passing**,
+`installDist`, and a two-client live smoke test proving both directions of
+realtime delivery, persistence/history consistency, server timestamps,
+request-ID correlation, clean disconnect/logout/revocation, and terminal
+restoration. Temporary smoke fixtures were removed afterward.
 
 ## CLI usage
 
@@ -167,8 +205,8 @@ these endpoints and no others:
 
 JWT/session facts: `sub` = userId, `sid` = sessionId; the same session is
 used for HTTP and realtime. The client never persists credentials or tokens
-to disk; passwords are `char[]` cleared after the request; tokens live in
-memory only and are never logged or printed.
+to disk; passwords are `char[]` cleared after use; tokens live in memory only
+and are never logged or printed.
 
 ## Architecture
 
@@ -180,7 +218,7 @@ bootstrap/    startup orchestration + console prompting + lifecycle orchestratio
 api/          HTTP transport, API clients, server DTOs, API exceptions
 auth/         authentication credential holders + JWT subject decoding
 session/      authenticated-session state for the app lifetime
-realtime/     WebSocket/STOMP communication (future)
+realtime/     WebSocket/STOMP transport + realtime lifecycle management
 model/        server-backed conversation/message state
 ui/           Lanterna rendering/navigation/interaction and history-loading seam
 config/       application configuration (AppConfig + resolver)
@@ -191,8 +229,9 @@ Rules:
 - The UI must not directly construct HTTP requests or STOMP frames.
 - Server DTOs stay separate from UI state.
 - Prefer immutable records for DTOs.
-- The conversation store preserves server ordering; it does not re-sort by timestamps.
+- The conversation store preserves server ordering; it does not use timestamps for ordering.
 - Server `lastSequenceNumber` is a high-water mark, not proof that all messages through that sequence are locally loaded.
+- Realtime reconnect catch-up uses the locally loaded sequence as the HTTP `afterSequence` cursor.
 - No ORM, database, SQLite, embedded server, broker, reactive framework,
   caching, or offline sync without a concrete requirement.
 
@@ -208,13 +247,14 @@ Phase 3 fixes `42e7f29`).
 **Phase 4 — Server-backed conversations and message history: done**
 (commit `9393514`).
 
-Phase 4 has **106 automated tests passing**. The implementation was also
-smoke-tested against the local Samvaad Server with disposable conversation
-fixtures: login, server-backed conversation list, ordered message history,
-server logout/revocation, and clean terminal restoration all passed. Test
-fixtures were removed afterward.
+**Phase 5 — Message sending and realtime: done**
+(commit `97d01c9`).
+
+The Phase 5 baseline has **131 automated tests passing**. Two-client live
+verification proved authenticated realtime delivery in both directions,
+server persistence/history consistency, timestamp display, send correlation,
+clean disconnect, HTTP logout/session revocation, and terminal restoration.
 
 Next phases will be defined only after the relevant Samvaad Server contracts
-are verified. Messaging/send and realtime are intentionally separate future
-phases; friends/search/request workflows are also separate and must use only
-verified server contracts.
+are verified. Friends/search/request workflows remain separate and must use
+only verified server contracts.
