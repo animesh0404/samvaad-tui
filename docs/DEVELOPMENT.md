@@ -48,17 +48,22 @@ all runtime dependencies, and the `samvaad-tui` launcher. No fat/uber JAR
 
 Phase 3 established the Lanterna `3.1.5` fullscreen shell. Phase 4 replaced
 preview data with server-backed conversation/message state. Phase 5 adds
-message sending and realtime delivery.
+message sending and realtime delivery. Phase 6 adds exact user lookup and
+pending friend-request workflows.
 
 Responsibilities:
 
 - `TuiApp` owns terminal lifecycle, the polling render/input loop, and background worker coordination.
-- `TuiController` owns keyboard-to-state transitions and composer/send interaction.
-- `TuiRenderer` owns terminal presentation, including active-pane focus, message timestamps, and send status.
+- `TuiController` owns keyboard-to-state transitions and composer/social interaction.
+- `TuiRenderer` owns terminal presentation, including active-pane focus, messages, send status, lookup results, and request panels.
 - `TuiLauncher` is the bootstrap seam.
-- `TuiSession` is a token-free bundle of UI display context, conversation state, history-loading behavior, and realtime operations.
+- `TuiSession` is a token-free bundle of UI display context, conversation/social state, history-loading behavior, and realtime operations.
 - `ConversationStore` owns in-memory server-backed conversation/message presentation state, preserves server ordering, deduplicates authoritative messages, and tracks high-water versus locally loaded sequence.
+- `FriendRequestStore` separately owns exact-username lookup state and pending incoming/outgoing friend-request presentation state.
 - `ConversationApiClient` owns the verified conversation/history HTTP reads.
+- `UserLookupApiClient` owns the verified exact-username lookup.
+- `FriendRequestApiClient` owns the six verified friend-request HTTP operations.
+- `FriendService` is the token-free UI seam for social operations; `AppBootstrap` keeps the access token inside authenticated closures.
 - `MessageHistoryLoader` keeps history loading behind a small seam for testing and realtime catch-up.
 - `RealtimeClient` is the transport seam.
 - `SpringRealtimeClient` implements the verified WebSocket/STOMP contract.
@@ -67,14 +72,22 @@ Responsibilities:
 Current bindings:
 
 ```text
-Up / Down / k / j  select conversation
-Tab                 switch focus
-Enter               open selected item / composer or send message
+Up / Down / k / j  select conversation/request item
+Tab                 switch focus / request section
+Enter               open selected item / composer or send message / select lookup result
+/                   enter exact username search
+r                   open friend requests
 F1 / ?              help
-Esc                 close help / return focus to conversations
+Esc                 close help / leave social mode
 F10 / Ctrl+C        quit
 q (conversation list) quit
 ```
+
+Within friend-request mode, the UI supports incoming/outgoing sections and
+verified actions for accept, reject, and cancel. Search performs exact username
+lookup; it is not fuzzy or prefix search. Friend-request HTTP work is done on
+background workers and is refreshed explicitly after mutations and periodically
+(30 seconds) while the request view is active.
 
 The active pane is visibly indicated. Messages display server-provided
 `LocalDateTime` values without timezone conversion. A send remains `Sending...`
@@ -83,8 +96,8 @@ is observed, then becomes `Sent`.
 
 The renderer paints owned cells explicitly, handles resize-triggered redraws,
 and derives Help geometry from content with padding and narrow-terminal
-clamping. The polling render loop ensures background history/realtime changes
-become visible while the user is idle.
+clamping. The polling render loop ensures background history/realtime/social
+changes become visible while the user is idle.
 
 ## HTTP and realtime behavior
 
@@ -94,6 +107,27 @@ The conversation/history HTTP paths remain:
 GET /api/conversations/direct?limit&offset
 GET /api/conversations/direct/{conversationId}/messages?afterSequence&limit
 ```
+
+Phase 6 social HTTP paths are:
+
+```text
+GET  /api/users/lookup?username={username}
+POST /api/friend-requests
+GET  /api/friend-requests/incoming
+GET  /api/friend-requests/outgoing
+POST /api/friend-requests/{requestId}/accept
+POST /api/friend-requests/{requestId}/reject
+POST /api/friend-requests/{requestId}/cancel
+```
+
+The lookup contract is exact username matching. The server performs its
+case-insensitive/trimmed match and returns one safe user record. The TUI does
+not implement fuzzy search, pagination, or client-side filtering.
+
+Friend-request IDs, timestamps, status transitions, authorization, duplicate
+detection, and persistence remain server-owned. The client generates no request
+IDs or idempotency keys and does not retry these operations. Incoming/outgoing
+lists are consumed in the order returned by the server.
 
 Phase 5 realtime paths are:
 
@@ -142,11 +176,17 @@ Current flow:
 7. establish realtime connection using the same access JWT
 8. enter the fullscreen TUI shell
 9. lazily load selected conversation history and subscribe to it
-10. send/receive messages through the realtime manager
-11. disconnect realtime
-12. call server logout
-13. clear local session state
-14. exit
+10. use exact username lookup or manage pending friend requests through HTTP workers as needed
+11. send/receive messages through the realtime manager
+12. disconnect realtime
+13. call server logout
+14. clear local session state
+15. exit
+
+The server currently provides no authoritative accepted-friends list, friendship
+status endpoint, unfriend operation, friend-request realtime contract, or
+conversation creation on friend acceptance. The TUI therefore does not infer
+friends from conversations/pending requests or invent these endpoints.
 
 Exit codes:
 
@@ -156,13 +196,11 @@ Exit codes:
 
 ## Testing approach
 
-API tests use the `HttpTransport` seam and a fake transport rather than requiring a running server. Conversation API tests verify exact paths/query parameters, JSON parsing including nullable participant usernames and `LocalDateTime`, malformed responses, transport failures, and 400/401/403/404 mappings. Session tests cover authentication state, token replacement, and authenticated user-id handling. Model tests cover server-order preservation, authoritative message merge/deduplication, and the distinction between server high-water marks and locally loaded sequence. TUI state/controller/renderer/app tests cover keyboard interaction, focus, timestamps, send-state transitions, background repaint, and lifecycle behavior.
+API tests use the `HttpTransport` seam and a fake transport rather than requiring a running server. Conversation API tests verify exact paths/query parameters, JSON parsing including nullable participant usernames and `LocalDateTime`, malformed responses, transport failures, and 400/401/403/404 mappings. User lookup tests verify exact path encoding, blank handling, response validation, and HTTP failure mapping. Friend-request API tests verify all six endpoints, null-body mutations, status mapping, malformed responses, and server-owned request IDs. Session tests cover authentication state, token replacement, and authenticated user-id handling. Model tests cover server-order preservation, authoritative message merge/deduplication, the distinction between server high-water marks and locally loaded sequence, and friend-request lookup/list state. TUI state/controller/renderer/app tests cover keyboard interaction, focus, timestamps, send-state transitions, social navigation/actions, background repaint, and lifecycle behavior.
 
 Realtime tests cover the transport seam, URL/destination/payload behavior, subscription replacement/deduplication, request-ID generation, authoritative message merge, bounded reconnect/resubscription, history catch-up, notices, and disconnect behavior without requiring a live socket.
 
-A live server smoke test should use disposable data and a real terminal. Phase 5 was manually and automatically verified with two clients: both authenticated, subscribed to the same conversation, exchanged messages in both directions, observed server timestamps and authoritative persistence, and exited through realtime disconnect followed by HTTP logout/session revocation. Temporary fixtures were removed afterward.
-
-The current Phase 5 baseline has **131 automated tests passing**.
+A live server smoke test should use disposable data and a real terminal. Phase 6 manual verification exercised user lookup, friend-request send/accept, pending-list refresh, and the existing conversation/message flow. Interactive smoke testing should be performed manually rather than through a fragile automated PTY harness.
 
 ## Dependency policy
 
@@ -185,4 +223,4 @@ For each phase:
 9. commit and push
 10. verify the repository state
 
-The root README is part of the primary project documentation, not a separate afterthought.
+The root README is part of the primary project documentation, not a separate afterthought. Interactive smoke testing is a manual verification responsibility; automated tests should remain non-interactive and deterministic.
