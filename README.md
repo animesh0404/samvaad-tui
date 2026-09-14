@@ -6,7 +6,8 @@ Thin Java terminal client for the existing Samvaad Server.
 
 Provide a clean, keyboard-driven, WhatsApp-like terminal experience:
 login, conversation list, direct conversations, message history, sending,
-realtime receiving, user search, friend requests, logout, and shortcut help.
+realtime receiving, user search, friend requests, Friends, starting chats from
+friends, logout, and shortcut help.
 
 ## Scope / boundary
 
@@ -72,6 +73,9 @@ Behavior:
 - User lookup and friend-request operations run through token-free UI seams on
   background workers; pending request lists refresh explicitly after mutations
   and periodically while the request view is active.
+- The Friends tab loads the authoritative `GET /api/friends` list on entry or
+  explicit refresh. Selecting a friend opens a known conversation or starts a
+  new chat through the existing first-message REST contract.
 - Exiting the TUI disconnects realtime first, then performs server logout and
   clears local session state.
 
@@ -181,14 +185,11 @@ Implemented:
 - token-free `FriendService` seam with authenticated closures owned by `AppBootstrap`;
 - background HTTP work so lookup/request operations do not block terminal input/rendering;
 - explicit refresh after mutations and 30-second refresh while the request view is active;
-- search and request-list TUI workflows with keyboard help and action feedback;
-- no fuzzy/prefix search, friend list, unfriend/status endpoint, friend-request realtime, or conversation creation invented on the client.
+- search and request-list TUI workflows with keyboard help and action feedback.
 
-The server currently does **not** expose an authoritative accepted-friends
-list. Pending incoming/outgoing requests cannot be used as a friends list
-because accepted requests leave those pending collections. Likewise, accepting
-a friend request does not create a conversation. A future Friends sidebar and
-first-chat workflow therefore require the relevant server contracts first.
+Phase 6 deliberately did not infer an accepted-friends list from pending
+requests or conversations. That limitation was removed by the server-owned
+Friends API in Phase 7.
 
 Phase 6 implementation commit: `fcb3ac3`.
 
@@ -196,6 +197,39 @@ Phase 6 verification included `./gradlew clean test` with **195 tests passing**
 and `./gradlew installDist` succeeding. Manual verification exercised lookup,
 friend-request send/accept and the existing messaging flow. Interactive smoke
 verification is a manual responsibility rather than an automated PTY harness.
+
+## Phase 7 — Friends tab and start chat
+
+Phase 7 adds the authoritative Friends experience on top of the verified
+server contracts.
+
+Implemented:
+
+- `GET /api/friends` through `FriendsApiClient`;
+- dedicated `FriendResponse`, `FriendEntry`, and `FriendStore` types;
+- Friends state is populated only from the server Friends endpoint and preserves
+  server username-ascending order;
+- `CONVERSATIONS | FRIENDS` sidebar tabs;
+- Left/Right switches tabs only while the sidebar has focus;
+- Up/Down or `k`/`j` navigates friends without wrapping;
+- `g` refreshes the Friends list;
+- selecting a friend resolves an existing conversation by authoritative `userId`;
+- if no known conversation exists, the TUI enters a pending new-chat state;
+- first message uses `POST /api/conversations/direct/messages` with
+  `username`, `content`, and a fresh UUID `requestId`;
+- the server-created `conversationId` and persisted message are authoritative;
+- after first-message success, the TUI refreshes the conversation list, preserves
+  server ordering, selects the authoritative conversation, tops up history, and
+  hands off to the existing STOMP subscription flow;
+- no synthetic conversation metadata, optimistic persisted message, friend
+  polling, friend realtime, or dedicated conversation-create endpoint is added.
+
+Phase 7 implementation commit: `2ed00f5`.
+
+Automated verification completed with `./gradlew clean test` and
+**253 tests passing**, followed by `./gradlew installDist` succeeding.
+Interactive Friends/start-chat smoke testing remains a manual real-terminal
+responsibility; no PTY harness is used.
 
 ## CLI usage
 
@@ -210,8 +244,8 @@ Exit codes: `0` success, `1` authentication/server/runtime failure, `2` usage/va
 ## Authentication contract (verified, server-authoritative)
 
 Base API URL is the configured server URL. The client implements exactly
-the verified endpoints described in `docs/AUTHENTICATION.md`; Phase 6 social
-HTTP uses the same access JWT as conversation/history HTTP.
+the verified endpoints described in `docs/AUTHENTICATION.md`; social and
+first-message HTTP use the same access JWT as conversation/history HTTP.
 
 * Login: `POST /api/auth/login`
   ```json
@@ -227,7 +261,7 @@ HTTP uses the same access JWT as conversation/history HTTP.
   `installationId` is optional server metadata — this client always sends
   null and never generates one. `identifier` is the username from the CLI.
 * Login response: `{ "accessToken", "refreshToken", "expiresIn", "sessionId" }`.
-* Refresh: `POST /api/auth/refresh` with `{ "refreshToken" }`; response has
+* Refresh: `POST /api/auth/refresh` with `{ "refreshToken": "..." }`; response has
   the same shape as login. The client replaces its tokens with the latest
   server-issued pair; there is no background refresh yet.
 * Logout: `POST /api/auth/logout` with `Authorization: Bearer <accessToken>`;
@@ -263,7 +297,7 @@ Rules:
 - The conversation store preserves server ordering; it does not use timestamps for ordering.
 - Server `lastSequenceNumber` is a high-water mark, not proof that all messages through that sequence are locally loaded.
 - Realtime reconnect catch-up uses the locally loaded sequence as the HTTP `afterSequence` cursor.
-- Friend-request state remains separate from conversation/message state.
+- Friend-request state and Friends state remain separate from conversation/message state.
 - No ORM, database, SQLite, embedded server, broker, reactive framework,
   caching, or offline sync without a concrete requirement.
 
@@ -285,10 +319,13 @@ Phase 3 fixes `42e7f29`).
 **Phase 6 — User lookup and friend requests: done**
 (commit `fcb3ac3`).
 
-Phase 6 leaves the client intentionally unable to display an accepted-friends
-list or initiate a first conversation from a friend entry because those
-server contracts are not currently exposed. The next phase must begin with
-server-contract verification rather than client-side invention.
+**Phase 7 — Friends tab and start chat: done**
+(commit `2ed00f5`).
+
+The current TUI can display the server-authoritative Friends list, open known
+friend conversations, and start a new conversation by sending the first message
+through the existing direct-message REST contract. Subsequent chat uses the
+existing history and STOMP realtime architecture.
 
 For detailed architecture, authentication, development guidance, and decision
 records, see `docs/ARCHITECTURE.md`, `docs/AUTHENTICATION.md`,
