@@ -28,6 +28,10 @@ import java.util.List;
  * while the sidebar is focused. In FRIENDS, Up/Down or k/j select,
  * Enter opens the selected friend's chat, 'g' refreshes the list,
  * Esc returns focus per existing conventions.
+ *
+ * <p>F5 is the universal manual refresh: it refreshes the authoritative
+ * data for the active view (conversations, friends, search lookup, or
+ * the displayed request list) through that view's existing mechanism.
  */
 public final class TuiController {
 
@@ -42,6 +46,7 @@ public final class TuiController {
         CANCEL_REQUEST,
         REFRESH_REQUESTS,
         REFRESH_FRIENDS,
+        REFRESH_CONVERSATIONS,
         SELECT_FRIEND,
         SEND_FIRST_MESSAGE
     }
@@ -82,6 +87,9 @@ public final class TuiController {
             state.toggleHelp();
             return Action.CONTINUE;
         }
+        if (key.getKeyType() == KeyType.F5) {
+            return refreshActiveView(state);
+        }
         if (state.view() == TuiState.View.SEARCH) {
             return handleSearchKeys(key, state);
         }
@@ -103,6 +111,24 @@ public final class TuiController {
             return handleConversationKeys(key, state, conversations, friendCount);
         }
         return handleComposerKeys(key, state);
+    }
+
+    /**
+     * Universal manual refresh: refreshes the authoritative data for
+     * the currently active server-backed view through that view's
+     * existing refresh mechanism. Never restarts the TUI.
+     */
+    private Action refreshActiveView(TuiState state) {
+        if (state.view() == TuiState.View.SEARCH) {
+            return Action.LOOKUP_USER;
+        }
+        if (state.view() == TuiState.View.REQUESTS) {
+            return Action.REFRESH_REQUESTS;
+        }
+        if (state.sidebarTab() == TuiState.SidebarTab.FRIENDS) {
+            return Action.REFRESH_FRIENDS;
+        }
+        return Action.REFRESH_CONVERSATIONS;
     }
 
     private Action handleConversationKeys(KeyStroke key, TuiState state,

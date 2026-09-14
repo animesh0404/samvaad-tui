@@ -21,6 +21,7 @@ import com.samvaad.tui.realtime.RealtimeException;
 import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.LongSupplier;
 
 /**
  * Fullscreen TUI shell lifecycle: opens the terminal, runs the
@@ -36,12 +37,24 @@ public final class TuiApp implements TuiLauncher {
     static final int HISTORY_LIMIT = 20;
     static final int POLL_MILLIS = 50;
     static final long REQUEST_REFRESH_MILLIS = 30_000;
+    static final long CONVERSATION_REFRESH_MILLIS = 5_000;
 
     private final TuiController controller = new TuiController();
     private final TuiRenderer renderer = new TuiRenderer();
+    private final LongSupplier clock;
     private volatile boolean requestsRefreshing;
     private volatile long lastRequestRefresh;
     private volatile boolean friendsRefreshing;
+    private volatile boolean conversationsRefreshing;
+    private volatile long lastConversationRefresh;
+
+    public TuiApp() {
+        this(System::currentTimeMillis);
+    }
+
+    TuiApp(LongSupplier clock) {
+        this.clock = clock;
+    }
 
     @Override
     public void launch(TuiSession session) {
@@ -85,6 +98,7 @@ public final class TuiApp implements TuiLauncher {
             drainRealtimeNotice(session, state);
             reconcilePendingSend(session.store(), state);
             maybeRefreshRequests(session, state);
+            maybeRefreshConversations(session, state);
             renderer.render(screen, state, session.store(), session.username(), session.serverUrl(),
                     session.friendStore(), session.friendList());
             screen.refresh();
@@ -126,6 +140,9 @@ public final class TuiApp implements TuiLauncher {
             }
             if (action == TuiController.Action.REFRESH_REQUESTS) {
                 refreshRequests(session, state, true);
+            }
+            if (action == TuiController.Action.REFRESH_CONVERSATIONS) {
+                refreshConversations(session, state, true);
             }
             if (action == TuiController.Action.REFRESH_FRIENDS) {
                 refreshFriends(session, state);
@@ -550,6 +567,77 @@ public final class TuiApp implements TuiLauncher {
         if (System.currentTimeMillis() - lastRequestRefresh >= REQUEST_REFRESH_MILLIS) {
             refreshRequests(session, state, false);
         }
+    }
+
+    /**
+     * Pure throttle decision for the automatic conversation discovery
+     * tick. Kept static so tests pin the interval without sleeping.
+     */
+    static boolean isRefreshDue(long lastRefreshMillis, long nowMillis, long intervalMillis) {
+        return nowMillis - lastRefreshMillis >= intervalMillis;
+    }
+
+    /**
+     * Periodic authoritative conversation-list discovery tick. Runs at
+     * most every {@link #CONVERSATION_REFRESH_MILLIS} and never on every
+     * render tick; the guarded worker below does the HTTP.
+     */
+    void maybeRefreshConversations(TuiSession session, TuiState state) {
+        if (conversationsRefreshing) {
+            return;
+        }
+        if (isRefreshDue(lastConversationRefresh, clock.getAsLong(),
+                CONVERSATION_REFRESH_MILLIS)) {
+            refreshConversations(session, state, false);
+        }
+    }
+
+    /**
+     * Refreshes the authoritative conversation list on a daemon worker
+     * through the existing conversation loader. Selection follows the
+     * selected conversation ID across reorderings; newly discovered
+     * conversations appear without stealing selection or focus. A
+     * failed refresh preserves the visible list; only an explicit
+     * (manual) failure surfaces a status message.
+     */
+    void refreshConversations(TuiSession session, TuiState state, boolean explicit) {
+        if (conversationsRefreshing) {
+            return;
+        }
+        conversationsRefreshing = true;
+        lastConversationRefresh = clock.getAsLong();
+        ConversationStore store = session.store();
+        List<ConversationEntry> current = store.conversations();
+        UUID selectedId = current.isEmpty()
+                ? null
+                : current.get(Math.min(state.selectedIndex(), current.size() - 1))
+                        .conversationId();
+        int fallbackIndex = state.selectedIndex();
+        Thread worker = new Thread(() -> {
+            try {
+                List<ConversationEntry> fresh = session.conversationLoader().load();
+                store.replaceConversations(fresh);
+                List<ConversationEntry> updated = store.conversations();
+                int index = indexOfConversation(updated, selectedId);
+                if (index >= 0) {
+                    state.selectConversation(index);
+                } else if (!updated.isEmpty()) {
+                    state.selectConversation(Math.min(fallbackIndex, updated.size() - 1));
+                }
+            } catch (SamvaadApiException e) {
+                if (explicit) {
+                    state.setStatus("Could not refresh conversations.");
+                }
+            } catch (RuntimeException e) {
+                if (explicit) {
+                    state.setStatus("Could not refresh conversations.");
+                }
+            } finally {
+                conversationsRefreshing = false;
+            }
+        }, "samvaad-conversations-refresh");
+        worker.setDaemon(true);
+        worker.start();
     }
 
     static String friendLookupMessage(SamvaadApiException e) {

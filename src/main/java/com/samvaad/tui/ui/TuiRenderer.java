@@ -418,6 +418,7 @@ public final class TuiRenderer {
                 "/               Search user by exact username",
                 "r               Friend requests (incoming/outgoing)",
                 "F1 or ?         Toggle this help",
+                "F5              Refresh current view",
                 "Esc             Close help",
                 "F10, Ctrl+C     Quit (q quits in the list)",
                 "",
