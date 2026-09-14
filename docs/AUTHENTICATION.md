@@ -33,7 +33,7 @@ The server returns `accessToken`, `refreshToken`, `expiresIn`, and `sessionId`.
 
 `AuthResponse` represents that response and `AuthSession` represents the authenticated session in memory.
 
-The server-defined JWT contract has `sub = userId` and `sid = sessionId`. Phase 4 decodes the access-token payload's `sub` claim to obtain the authenticated user id for local sender attribution. The client does not perform JWT signature verification; authentication validity remains the server's responsibility.
+The server-defined JWT contract has `sub = userId` and `sid = sessionId`. The client decodes the access-token payload's `sub` claim to obtain the authenticated user id for local sender attribution. The client does not perform JWT signature verification; authentication validity remains the server's responsibility.
 
 ## Session state
 
@@ -64,24 +64,30 @@ A successful response replaces the current authentication session with the lates
 
 Logout uses `POST /api/auth/logout` with `Authorization: Bearer <access-token>`.
 
-After successful login, the TUI shell runs with display context only; access and refresh tokens remain in the session/bootstrap layer. Exiting the TUI returns control to bootstrap, which calls server logout and then clears local authenticated state. Local cleanup is therefore not a substitute for server logout.
+After successful login, the TUI shell runs with display context only; raw access and refresh tokens remain in the session/bootstrap/realtime layers. Exiting the TUI disconnects realtime first, then bootstrap calls server logout and clears local authenticated state. Local cleanup is therefore not a substitute for server logout.
 
-## Conversation/history HTTP authentication
+## Conversation/history and realtime authentication
 
-Phase 4 conversation and message-history requests also use:
+Phase 4 conversation and message-history requests use:
 
 ```text
 Authorization: Bearer <access-token>
 ```
 
-The same authenticated session/JWT is intended for future realtime use.
+Phase 5 uses the **same access JWT from the same authenticated session** for STOMP CONNECT on the WebSocket connection at `/ws`.
 
-The TUI consumes only the verified server reads:
+The realtime layer keeps the access token internally. `TuiSession`, `TuiApp`, `TuiController`, and `TuiRenderer` do not receive the raw token.
+
+The TUI consumes only these verified conversation/history reads:
 
 - `GET /api/conversations/direct?limit&offset`
 - `GET /api/conversations/direct/{conversationId}/messages?afterSequence&limit`
 
-The UI receives display context and client-side state, not the raw token.
+and these verified realtime destinations:
+
+- WebSocket `/ws`
+- STOMP send `/app/chat.send`
+- STOMP subscription `/topic/conversations/{conversationId}`
 
 ## Security rules
 
@@ -91,8 +97,11 @@ The UI receives display context and client-side state, not the raw token.
 - Access and refresh tokens are held in memory only.
 - Credentials and tokens are not persisted locally.
 - The Lanterna UI must not receive or render authentication tokens.
+- The realtime transport must not expose credentials through user-facing notices.
 - Decoding the JWT `sub` claim is only for local sender attribution; it is not an authentication decision.
 
 ## Current limitations
 
-Authentication currently has no persistent credentials, persistent tokens, background refresh, multi-account storage, offline authentication, or device/installation identity generation. Phase 4 adds authenticated conversation/history reads and local sender attribution but does not add new authentication endpoints, token persistence, or realtime behavior.
+Authentication currently has no persistent credentials, persistent tokens, background refresh, multi-account storage, offline authentication, or device/installation identity generation. Phase 5 adds authenticated STOMP connectivity and realtime messaging but does not add new authentication endpoints or token persistence.
+
+The current realtime error contract does not use a client-subscribed `/user/queue/errors` destination because that wiring was not established as part of the verified server contract. Transport ERROR/session callbacks are used instead.
