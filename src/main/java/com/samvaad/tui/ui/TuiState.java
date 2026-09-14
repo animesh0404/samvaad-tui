@@ -1,8 +1,10 @@
 package com.samvaad.tui.ui;
 
+import java.util.UUID;
+
 /**
  * Mutable UI state for the TUI shell: selection, focus, composer buffer,
- * help overlay visibility, and the transient status line.
+ * pending send, help overlay visibility, and the transient status line.
  */
 public final class TuiState {
 
@@ -16,6 +18,7 @@ public final class TuiState {
     private Focus focus = Focus.CONVERSATIONS;
     private int selectedIndex;
     private String composer = "";
+    private UUID pendingSend;
     private boolean helpVisible;
     private String status = "";
 
@@ -29,6 +32,14 @@ public final class TuiState {
 
     public String composer() {
         return composer;
+    }
+
+    /**
+     * Idempotency key of the send awaiting its authoritative broadcast,
+     * or null when nothing is pending.
+     */
+    public UUID pendingSend() {
+        return pendingSend;
     }
 
     public boolean helpVisible() {
@@ -73,6 +84,14 @@ public final class TuiState {
 
     public void clearComposer() {
         composer = "";
+    }
+
+    public void setPendingSend(UUID requestId) {
+        pendingSend = requestId;
+    }
+
+    public void clearPendingSend() {
+        pendingSend = null;
     }
 
     public void toggleHelp() {

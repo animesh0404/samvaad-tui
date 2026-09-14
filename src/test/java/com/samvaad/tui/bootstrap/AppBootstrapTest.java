@@ -9,6 +9,8 @@ import com.samvaad.tui.api.AuthApiClient;
 import com.samvaad.tui.api.ConversationApiClient;
 import com.samvaad.tui.api.FakeHttpTransport;
 import com.samvaad.tui.auth.TestTokens;
+import com.samvaad.tui.realtime.FakeRealtimeClient;
+import com.samvaad.tui.realtime.RealtimeException;
 import com.samvaad.tui.cli.CliOptions;
 import com.samvaad.tui.ui.TuiException;
 import com.samvaad.tui.ui.TuiLauncher;
@@ -33,9 +35,10 @@ class AppBootstrapTest {
             + "\"updatedAt\":\"2026-09-14T10:15:30\"}]";
 
     private static AppBootstrap bootstrap(
-            FakeConsoleIO io, FakeHttpTransport transport, TuiLauncher tui) {
+            FakeConsoleIO io, FakeHttpTransport transport, FakeRealtimeClient realtime,
+            TuiLauncher tui) {
         return new AppBootstrap(io, new AuthApiClient(transport),
-                new ConversationApiClient(transport), tui);
+                new ConversationApiClient(transport), realtime, tui);
     }
 
     private static void queueLoginListLogout(FakeHttpTransport transport) {
@@ -51,7 +54,7 @@ class AppBootstrapTest {
         FakeHttpTransport transport = new FakeHttpTransport();
         queueLoginListLogout(transport);
 
-        int exit = bootstrap(io, transport, (session) -> { }).run(
+        int exit = bootstrap(io, transport, new FakeRealtimeClient(), (session) -> { }).run(
                 new CliOptions("http://localhost:8080", "alice"));
 
         assertEquals(0, exit);
@@ -69,7 +72,7 @@ class AppBootstrapTest {
         queueLoginListLogout(transport);
         RecordingTui tui = new RecordingTui();
 
-        int exit = bootstrap(io, transport, tui).run(
+        int exit = bootstrap(io, transport, new FakeRealtimeClient(), tui).run(
                 new CliOptions("http://localhost:8080", "alice"));
 
         assertEquals(0, exit);
@@ -91,7 +94,7 @@ class AppBootstrapTest {
         transport.addJson(200, "");
         RecordingTui tui = new RecordingTui();
 
-        int exit = bootstrap(io, transport, tui).run(
+        int exit = bootstrap(io, transport, new FakeRealtimeClient(), tui).run(
                 new CliOptions("http://localhost:8080", "alice"));
 
         assertEquals(0, exit);
@@ -108,7 +111,7 @@ class AppBootstrapTest {
         FakeHttpTransport transport = new FakeHttpTransport();
         queueLoginListLogout(transport);
 
-        int exit = bootstrap(io, transport, (session) -> { }).run(new CliOptions(null, null));
+        int exit = bootstrap(io, transport, new FakeRealtimeClient(), (session) -> { }).run(new CliOptions(null, null));
 
         assertEquals(0, exit);
     }
@@ -119,7 +122,7 @@ class AppBootstrapTest {
         io.setPassword("s3cret".toCharArray());
         FakeHttpTransport transport = new FakeHttpTransport();
 
-        int exit = bootstrap(io, transport, (session) -> { }).run(
+        int exit = bootstrap(io, transport, new FakeRealtimeClient(), (session) -> { }).run(
                 new CliOptions("localhost:8080", "alice"));
 
         assertEquals(2, exit);
@@ -133,7 +136,7 @@ class AppBootstrapTest {
         FakeHttpTransport transport = new FakeHttpTransport();
         transport.addJson(401, "{\"message\":\"unauthorized\"}");
 
-        int exit = bootstrap(io, transport, (session) -> { }).run(
+        int exit = bootstrap(io, transport, new FakeRealtimeClient(), (session) -> { }).run(
                 new CliOptions("http://localhost:8080", "alice"));
 
         assertEquals(1, exit);
@@ -150,7 +153,7 @@ class AppBootstrapTest {
         transport.addJson(200, "");
         RecordingTui tui = new RecordingTui();
 
-        int exit = bootstrap(io, transport, tui).run(
+        int exit = bootstrap(io, transport, new FakeRealtimeClient(), tui).run(
                 new CliOptions("http://localhost:8080", "alice"));
 
         assertEquals(1, exit);
@@ -163,7 +166,8 @@ class AppBootstrapTest {
     void returnsTwoWhenInputEnds() {
         FakeHttpTransport transport = new FakeHttpTransport();
 
-        int exit = bootstrap(new FakeConsoleIO(), transport, (session) -> { })
+        int exit = bootstrap(new FakeConsoleIO(), transport, new FakeRealtimeClient(),
+                (session) -> { })
                 .run(new CliOptions(null, null));
 
         assertEquals(2, exit);
@@ -177,7 +181,7 @@ class AppBootstrapTest {
         FakeHttpTransport transport = new FakeHttpTransport();
         queueLoginListLogout(transport);
 
-        bootstrap(io, transport, (session) -> { }).run(
+        bootstrap(io, transport, new FakeRealtimeClient(), (session) -> { }).run(
                 new CliOptions("http://localhost:8080", "alice"));
 
         assertArrayEquals(new char[]{'\0', '\0', '\0', '\0', '\0', '\0'}, password);
@@ -192,7 +196,7 @@ class AppBootstrapTest {
         transport.addJson(200, LIST_JSON);
         transport.addJson(500, "boom");
 
-        int exit = bootstrap(io, transport, (session) -> { }).run(
+        int exit = bootstrap(io, transport, new FakeRealtimeClient(), (session) -> { }).run(
                 new CliOptions("http://localhost:8080", "alice"));
 
         assertEquals(0, exit);
@@ -205,7 +209,7 @@ class AppBootstrapTest {
         FakeHttpTransport transport = new FakeHttpTransport();
         queueLoginListLogout(transport);
 
-        int exit = bootstrap(io, transport, (session) -> {
+        int exit = bootstrap(io, transport, new FakeRealtimeClient(), (session) -> {
             throw new TuiException("No terminal.");
         }).run(new CliOptions("http://localhost:8080", "alice"));
 
@@ -225,7 +229,7 @@ class AppBootstrapTest {
         transport.addJson(200, LIST_JSON);
         transport.addJson(200, "");
 
-        String output = runCaptured(() -> bootstrap(io, transport, (session) -> { }).run(
+        String output = runCaptured(() -> bootstrap(io, transport, new FakeRealtimeClient(), (session) -> { }).run(
                 new CliOptions("http://localhost:8080", "alice")));
 
         assertFalse(output.contains("SENTINEL-PW"), "password must never be printed");
@@ -242,6 +246,45 @@ class AppBootstrapTest {
         public void launch(TuiSession session) {
             this.session = session;
         }
+    }
+
+    @Test
+    void realtimeConnectsWithWsUrlAndTokenThenDisconnects() {
+        FakeConsoleIO io = new FakeConsoleIO();
+        io.setPassword("s3cret".toCharArray());
+        FakeHttpTransport transport = new FakeHttpTransport();
+        queueLoginListLogout(transport);
+        FakeRealtimeClient realtime = new FakeRealtimeClient();
+
+        int exit = bootstrap(io, transport, realtime, (session) -> { }).run(
+                new CliOptions("http://localhost:8080", "alice"));
+
+        assertEquals(0, exit);
+        assertEquals(1, realtime.connects().size());
+        assertEquals("ws://localhost:8080/ws", realtime.connects().get(0).wsUrl());
+        assertTrue(realtime.connects().get(0).accessToken().length() > 0);
+        assertEquals(1, realtime.disconnects(), "realtime must disconnect after the TUI exits");
+    }
+
+    @Test
+    void realtimeConnectFailureDegradesToHistoryOnly() {
+        FakeConsoleIO io = new FakeConsoleIO();
+        io.setPassword("s3cret".toCharArray());
+        FakeHttpTransport transport = new FakeHttpTransport();
+        queueLoginListLogout(transport);
+        FakeRealtimeClient realtime = new FakeRealtimeClient();
+        realtime.failConnectWith(new RealtimeException("Realtime connection failed."));
+        RecordingTui tui = new RecordingTui();
+
+        String output = runCaptured(() -> {
+            int exit = bootstrap(io, transport, realtime, tui).run(
+                    new CliOptions("http://localhost:8080", "alice"));
+            assertEquals(0, exit);
+        });
+
+        assertTrue(tui.session != null, "TUI must still launch without realtime");
+        assertTrue(output.contains("realtime unavailable"), "degraded mode must be reported");
+        assertEquals(1, realtime.disconnects());
     }
 
     private static String runCaptured(Runnable runnable) {

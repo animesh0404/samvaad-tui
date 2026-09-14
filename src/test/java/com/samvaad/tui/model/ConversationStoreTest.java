@@ -62,8 +62,10 @@ class ConversationStoreTest {
         store.markLoading(ALICE_ID);
 
         store.putMessages(ALICE_ID, List.of(
-                new MessageEntry(ME, 1, "Hi", LocalDateTime.of(2026, 9, 14, 10, 0)),
-                new MessageEntry(ALICE_ID, 2, "Hello", LocalDateTime.of(2026, 9, 14, 10, 1))));
+                new MessageEntry(UUID.randomUUID(), ME, 1, "Hi",
+                        LocalDateTime.of(2026, 9, 14, 10, 0), UUID.randomUUID()),
+                new MessageEntry(UUID.randomUUID(), ALICE_ID, 2, "Hello",
+                        LocalDateTime.of(2026, 9, 14, 10, 1), UUID.randomUUID())));
 
         assertEquals(ConversationStore.LoadStatus.LOADED, store.statusOf(ALICE_ID));
         assertEquals(2, store.highestLoadedSequence(ALICE_ID));
@@ -90,6 +92,57 @@ class ConversationStoreTest {
         assertEquals(ConversationStore.LoadStatus.ERROR, store.statusOf(ALICE_ID));
         assertEquals("Access denied for this conversation.", store.errorOf(ALICE_ID));
         assertTrue(!store.markLoading(ALICE_ID), "error must not retrigger loading");
+    }
+
+    @Test
+    void mergeUnionsByIdInServerSequenceOrder() {
+        ConversationStore store = new ConversationStore(ME, List.of(entry(ALICE_ID, "alice")));
+        UUID first = UUID.randomUUID();
+        store.markLoading(ALICE_ID);
+        store.putMessages(ALICE_ID, List.of(
+                new MessageEntry(first, ME, 1, "Hi",
+                        LocalDateTime.of(2026, 9, 14, 10, 0), UUID.randomUUID())));
+
+        store.mergeMessages(ALICE_ID, List.of(
+                new MessageEntry(first, ME, 1, "Hi",
+                        LocalDateTime.of(2026, 9, 14, 10, 0), UUID.randomUUID()),
+                new MessageEntry(UUID.randomUUID(), ALICE_ID, 2, "Hello",
+                        LocalDateTime.of(2026, 9, 14, 10, 1), UUID.randomUUID())));
+
+        List<MessageEntry> messages = store.messagesOf(ALICE_ID);
+        assertEquals(2, messages.size(), "duplicate id must not duplicate");
+        assertEquals(1, messages.get(0).sequenceNumber());
+        assertEquals(2, messages.get(1).sequenceNumber());
+        assertEquals(2, store.highestLoadedSequence(ALICE_ID));
+    }
+
+    @Test
+    void updateHighWaterOnlyMovesForwardFromServerValues() {
+        ConversationStore store = new ConversationStore(ME, List.of(entry(ALICE_ID, "alice")));
+
+        store.updateHighWater(ALICE_ID, 7);
+        assertEquals(7, store.conversations().get(0).lastSequenceNumber());
+
+        store.updateHighWater(ALICE_ID, 4);
+        assertEquals(7, store.conversations().get(0).lastSequenceNumber(),
+                "client must never move the high-water mark backwards");
+
+        store.updateHighWater(UUID.randomUUID(), 9);
+    }
+
+    @Test
+    void containsRequestIdFindsAuthoritativeBroadcast() {
+        ConversationStore store = new ConversationStore(ME, List.of(entry(ALICE_ID, "alice")));
+        UUID requestId = UUID.randomUUID();
+        assertTrue(!store.containsRequestId(requestId));
+
+        store.markLoading(ALICE_ID);
+        store.putMessages(ALICE_ID, List.of(new MessageEntry(
+                UUID.randomUUID(), ME, 1, "Hi", LocalDateTime.of(2026, 9, 14, 10, 0), requestId)));
+
+        assertTrue(store.containsRequestId(requestId));
+        assertTrue(!store.containsRequestId(UUID.randomUUID()));
+        assertTrue(!store.containsRequestId(null));
     }
 
     @Test

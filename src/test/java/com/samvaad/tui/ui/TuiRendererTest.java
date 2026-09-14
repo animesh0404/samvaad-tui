@@ -2,6 +2,7 @@ package com.samvaad.tui.ui;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.googlecode.lanterna.SGR;
 import com.googlecode.lanterna.TerminalSize;
 import com.googlecode.lanterna.screen.Screen;
 import com.googlecode.lanterna.screen.TerminalScreen;
@@ -42,8 +43,10 @@ class TuiRendererTest {
                 entry(CHARLIE_CONVERSATION, UUID.randomUUID(), null));
         store.markLoading(BOB_CONVERSATION);
         store.putMessages(BOB_CONVERSATION, List.of(
-                new MessageEntry(BOB_ID, 1, "Hello", LocalDateTime.of(2026, 9, 14, 10, 0)),
-                new MessageEntry(ME, 2, "Hi!", LocalDateTime.of(2026, 9, 14, 10, 1))));
+                new MessageEntry(UUID.randomUUID(), BOB_ID, 1, "Hello",
+                        LocalDateTime.of(2026, 9, 14, 10, 0), UUID.randomUUID()),
+                new MessageEntry(UUID.randomUUID(), ME, 2, "Hi!",
+                        LocalDateTime.of(2026, 9, 14, 10, 1), UUID.randomUUID())));
         return store;
     }
 
@@ -61,8 +64,10 @@ class TuiRendererTest {
             assertTrue(text.contains("Conversations"), "sidebar is present");
             assertTrue(text.contains("bob"), "server conversation listed");
             assertTrue(text.contains("Hello"), "history message shown");
-            assertTrue(text.contains("You: Hi!"), "own messages labeled");
-            assertTrue(text.contains("bob: Hello"), "other messages labeled");
+            assertTrue(text.contains("You [09-14 10:01]: Hi!"), "own messages labeled");
+            assertTrue(text.contains("bob [09-14 10:00]: Hello"), "other messages labeled");
+            assertTrue(text.contains("10:00") && text.contains("10:01"),
+                    "server timestamps render for every message");
         } finally {
             screen.stopScreen();
         }
@@ -139,6 +144,34 @@ class TuiRendererTest {
     }
 
     @Test
+    void focusedPaneTitleIsBold() throws IOException {
+        Screen screen = new TerminalScreen(new DefaultVirtualTerminal(new TerminalSize(100, 30)));
+        screen.startScreen();
+        try {
+            TuiRenderer renderer = new TuiRenderer();
+            ConversationStore store = loadedStore();
+            TuiState listState = new TuiState();
+            renderer.render(screen, listState, store, USER, SERVER);
+            screen.refresh();
+            assertTrue(screen.getFrontCharacter(2, 1).getModifiers().contains(SGR.BOLD),
+                    "sidebar title bold when list focused");
+            assertTrue(!screen.getFrontCharacter(31, 1).getModifiers().contains(SGR.BOLD),
+                    "chat title plain when list focused");
+
+            TuiState composerState = new TuiState();
+            composerState.toggleFocus();
+            renderer.render(screen, composerState, store, USER, SERVER);
+            screen.refresh();
+            assertTrue(!screen.getFrontCharacter(2, 1).getModifiers().contains(SGR.BOLD),
+                    "sidebar title plain when composer focused");
+            assertTrue(screen.getFrontCharacter(31, 1).getModifiers().contains(SGR.BOLD),
+                    "chat title bold when composer focused");
+        } finally {
+            screen.stopScreen();
+        }
+    }
+
+    @Test
     void rendersHelpOverlayWhenVisible() throws IOException {
         Screen screen = new TerminalScreen(new DefaultVirtualTerminal(new TerminalSize(100, 30)));
         screen.startScreen();
@@ -169,8 +202,8 @@ class TuiRendererTest {
                 rows.add(row(screen, row, 100));
             }
             String text = String.join("\n", rows);
-            assertTrue(text.contains("Open conversation / composer notice"),
-                    "longest help line must not be clipped");
+            assertTrue(text.contains("Open conversation / send message"),
+                    "help line must be current");
             int firstBinding = -1;
             for (int i = 0; i < rows.size(); i++) {
                 if (rows.get(i).contains("Up/Down")) {
@@ -228,7 +261,8 @@ class TuiRendererTest {
             state.selectDown(store.conversations().size());
             store.markLoading(CHARLIE_CONVERSATION);
             store.putMessages(CHARLIE_CONVERSATION, List.of(new MessageEntry(
-                    UUID.randomUUID(), 1, "Lunch?", LocalDateTime.of(2026, 9, 14, 11, 0))));
+                    UUID.randomUUID(), UUID.randomUUID(), 1, "Lunch?",
+                    LocalDateTime.of(2026, 9, 14, 11, 0), UUID.randomUUID())));
             renderer.render(screen, state, store, USER, SERVER);
             screen.refresh();
 

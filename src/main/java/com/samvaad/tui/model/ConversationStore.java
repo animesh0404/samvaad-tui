@@ -2,6 +2,7 @@ package com.samvaad.tui.model;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -75,15 +76,56 @@ public final class ConversationStore {
      * actually present. Message order is kept exactly as provided.
      */
     public synchronized void putMessages(UUID conversationId, List<MessageEntry> loaded) {
-        List<MessageEntry> stored = new ArrayList<>(loaded);
-        messages.put(conversationId, stored);
+        mergeMessages(conversationId, loaded);
+    }
+
+    /**
+     * Merges messages by authoritative identity, keeping one entry per
+     * message id in ascending server sequence order. New rows may come
+     * from history pages, realtime broadcasts, or catch-up; the union
+     * ordered by the server's own sequence key reproduces server order
+     * without inventing values.
+     */
+    public synchronized void mergeMessages(UUID conversationId, List<MessageEntry> incoming) {
+        Map<UUID, MessageEntry> byId = new LinkedHashMap<>();
+        for (MessageEntry message : messages.getOrDefault(conversationId, List.of())) {
+            byId.put(message.messageId(), message);
+        }
+        for (MessageEntry message : incoming) {
+            if (message.messageId() != null) {
+                byId.putIfAbsent(message.messageId(), message);
+            }
+        }
+        List<MessageEntry> merged = new ArrayList<>(byId.values());
+        merged.sort((left, right) -> Long.compare(left.sequenceNumber(), right.sequenceNumber()));
+        messages.put(conversationId, merged);
         long highest = 0;
-        for (MessageEntry message : stored) {
+        for (MessageEntry message : merged) {
             highest = Math.max(highest, message.sequenceNumber());
         }
         highestLoadedSequence.put(conversationId, highest);
         loadStatuses.put(conversationId, LoadStatus.LOADED);
         loadErrors.remove(conversationId);
+    }
+
+    /**
+     * Refreshes the server high-water mark from a server-supplied sequence
+     * number only. Never derived arithmetically on the client.
+     */
+    public synchronized void updateHighWater(UUID conversationId, long sequenceNumber) {
+        for (int i = 0; i < conversations.size(); i++) {
+            ConversationEntry current = conversations.get(i);
+            if (current.conversationId().equals(conversationId)
+                    && sequenceNumber > current.lastSequenceNumber()) {
+                conversations.set(i, new ConversationEntry(
+                        current.conversationId(),
+                        current.otherParticipantUserId(),
+                        current.otherParticipantUsername(),
+                        sequenceNumber,
+                        current.updatedAt()));
+                return;
+            }
+        }
     }
 
     public synchronized void putError(UUID conversationId, String message) {
@@ -106,5 +148,24 @@ public final class ConversationStore {
 
     public synchronized String errorOf(UUID conversationId) {
         return loadErrors.get(conversationId);
+    }
+
+    /**
+     * Whether any locally held message carries the given idempotency key.
+     * Used to reconcile a pending send against its authoritative broadcast
+     * regardless of which conversation is currently selected.
+     */
+    public synchronized boolean containsRequestId(UUID requestId) {
+        if (requestId == null) {
+            return false;
+        }
+        for (List<MessageEntry> held : messages.values()) {
+            for (MessageEntry message : held) {
+                if (requestId.equals(message.requestId())) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }

@@ -11,6 +11,7 @@ import com.samvaad.tui.api.SamvaadApiException;
 import com.samvaad.tui.model.ConversationEntry;
 import com.samvaad.tui.model.ConversationStore;
 import com.samvaad.tui.model.MessageEntry;
+import com.samvaad.tui.realtime.RealtimeException;
 import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
@@ -20,12 +21,14 @@ import java.util.UUID;
  * render/input loop, and always restores the terminal on exit.
  *
  * <p>Receives display data only — never tokens or passwords — and never
- * touches HTTP or realtime code. History loads on a worker thread so HTTP
- * never blocks the UI thread.
+ * touches HTTP or realtime transports directly; realtime coordination
+ * goes through the session's manager. History loads on a worker thread
+ * so HTTP never blocks the UI thread.
  */
 public final class TuiApp implements TuiLauncher {
 
     static final int HISTORY_LIMIT = 20;
+    static final int POLL_MILLIS = 50;
 
     private final TuiController controller = new TuiController();
     private final TuiRenderer renderer = new TuiRenderer();
@@ -39,7 +42,10 @@ public final class TuiApp implements TuiLauncher {
         } catch (IOException e) {
             throw new TuiException("Cannot open terminal. Run inside a real terminal.", e);
         }
-        Thread shutdownHook = new Thread(() -> stopQuietly(screen), "samvaad-tui-cleanup");
+        Thread shutdownHook = new Thread(() -> {
+            stopQuietly(screen);
+            session.realtime().disconnect();
+        }, "samvaad-tui-cleanup");
         Runtime.getRuntime().addShutdownHook(shutdownHook);
         try {
             screen.startScreen();
@@ -58,16 +64,87 @@ public final class TuiApp implements TuiLauncher {
 
     private void runLoop(Screen screen, TuiSession session) throws IOException {
         TuiState state = new TuiState();
+        // Polling loop instead of blocking reads: background completions
+        // (history loads, realtime broadcasts, reconnect notices) repaint
+        // within one tick even while the user is idle. Diff refresh keeps
+        // idle frames cheap.
         while (true) {
             screen.doResizeIfNecessary();
             triggerHistoryLoad(session.store(), session.historyLoader(), state.selectedIndex());
+            ensureSubscribed(session, state);
+            drainRealtimeNotice(session, state);
+            reconcilePendingSend(session.store(), state);
             renderer.render(screen, state, session.store(), session.username(), session.serverUrl());
             screen.refresh();
-            KeyStroke key = screen.readInput();
-            if (controller.handle(key, state, session.store().conversations())
-                    == TuiController.Action.QUIT) {
+            KeyStroke key = screen.pollInput();
+            if (key == null) {
+                try {
+                    Thread.sleep(POLL_MILLIS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                continue;
+            }
+            TuiController.Action action =
+                    controller.handle(key, state, session.store().conversations());
+            if (action == TuiController.Action.QUIT) {
                 return;
             }
+            if (action == TuiController.Action.SEND) {
+                sendComposer(session, state);
+            }
+        }
+    }
+
+    private void ensureSubscribed(TuiSession session, TuiState state) {
+        List<ConversationEntry> conversations = session.store().conversations();
+        if (conversations.isEmpty()) {
+            return;
+        }
+        UUID selected = conversations.get(
+                Math.min(state.selectedIndex(), conversations.size() - 1)).conversationId();
+        session.realtime().switchTo(selected);
+    }
+
+    private void sendComposer(TuiSession session, TuiState state) {
+        List<ConversationEntry> conversations = session.store().conversations();
+        if (conversations.isEmpty()) {
+            return;
+        }
+        UUID selected = conversations.get(
+                Math.min(state.selectedIndex(), conversations.size() - 1)).conversationId();
+        String text = state.composer();
+        UUID requestId;
+        try {
+            requestId = session.realtime().send(selected, text);
+        } catch (RealtimeException e) {
+            state.setStatus("Send failed (" + e.getMessage() + ").");
+            return;
+        }
+        state.clearComposer();
+        state.setPendingSend(requestId);
+        state.setStatus("Sending...");
+    }
+
+    private void drainRealtimeNotice(TuiSession session, TuiState state) {
+        String notice = session.realtime().takeNotice();
+        if (notice != null) {
+            state.setStatus(notice);
+        }
+    }
+
+    /**
+     * Clears the pending send once its authoritative broadcast is present
+     * locally. Only the matching idempotency key clears it; unrelated
+     * messages leave it pending, and a synchronously failed send never
+     * sets it in the first place.
+     */
+    static void reconcilePendingSend(ConversationStore store, TuiState state) {
+        UUID pending = state.pendingSend();
+        if (pending != null && store.containsRequestId(pending)) {
+            state.clearPendingSend();
+            state.setStatus("Sent.");
         }
     }
 
@@ -120,8 +197,7 @@ public final class TuiApp implements TuiLauncher {
         };
     }
 
-    private Terminal openTerminal() {
-        DefaultTerminalFactory factory = new DefaultTerminalFactory();
+    private Terminal openTerminal() {        DefaultTerminalFactory factory = new DefaultTerminalFactory();
         factory.setInitialTerminalSize(new TerminalSize(100, 30));
         factory.setUnixTerminalCtrlCBehaviour(UnixLikeTerminal.CtrlCBehaviour.TRAP);
         try {

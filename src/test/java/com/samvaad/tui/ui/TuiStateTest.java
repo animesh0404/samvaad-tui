@@ -2,8 +2,10 @@ package com.samvaad.tui.ui;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class TuiStateTest {
@@ -64,8 +66,20 @@ class TuiStateTest {
     }
 
     @Test
-    void helpAndStatusFlags() {
+    void pendingSendTracksReconciliationKey() {
         TuiState state = new TuiState();
+        assertNull(state.pendingSend());
+
+        UUID requestId = UUID.randomUUID();
+        state.setPendingSend(requestId);
+        assertEquals(requestId, state.pendingSend());
+
+        state.clearPendingSend();
+        assertNull(state.pendingSend());
+    }
+
+    @Test
+    void helpAndStatusFlags() {        TuiState state = new TuiState();
         assertFalse(state.helpVisible());
 
         state.toggleHelp();

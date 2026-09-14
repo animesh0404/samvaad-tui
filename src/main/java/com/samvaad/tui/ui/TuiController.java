@@ -9,7 +9,7 @@ import java.util.List;
  * Maps Lanterna key strokes onto {@link TuiState} transitions.
  *
  * <p>Bindings: Up/Down or k/j select, Tab moves focus, Enter opens the
- * highlighted conversation or (in the composer) shows the Phase 5 notice,
+ * highlighted conversation, Enter in the composer requests a send,
  * F1 or '?' toggles help, Esc closes help, any other key dismisses the
  * help overlay and is processed normally, F10 / Ctrl+C / 'q' in the list
  * quits. Typing otherwise edits the composer when it is focused.
@@ -18,7 +18,8 @@ public final class TuiController {
 
     public enum Action {
         CONTINUE,
-        QUIT
+        QUIT,
+        SEND
     }
 
     public Action handle(KeyStroke key, TuiState state, List<ConversationEntry> conversations) {
@@ -88,9 +89,11 @@ public final class TuiController {
 
     private Action handleComposerKeys(KeyStroke key, TuiState state) {
         if (key.getKeyType() == KeyType.Enter) {
-            state.clearComposer();
-            state.setStatus("Message sending arrives in Phase 5 - preview shell only.");
-            return Action.CONTINUE;
+            if (state.composer().isBlank()) {
+                state.setStatus("Type a message first.");
+                return Action.CONTINUE;
+            }
+            return Action.SEND;
         }
         if (key.getKeyType() == KeyType.Backspace) {
             state.backspaceComposer();

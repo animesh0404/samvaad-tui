@@ -9,6 +9,8 @@ import com.googlecode.lanterna.screen.Screen;
 import com.samvaad.tui.model.ConversationEntry;
 import com.samvaad.tui.model.ConversationStore;
 import com.samvaad.tui.model.MessageEntry;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 /**
@@ -25,6 +27,8 @@ public final class TuiRenderer {
 
     private static final String STATUS_HINTS =
             "Up/Down select - Tab focus - Enter open - ? help - F10 quit";
+
+    static final DateTimeFormatter MESSAGE_TIME = DateTimeFormatter.ofPattern("MM-dd HH:mm");
 
     public void render(Screen screen, TuiState state, ConversationStore store,
             String username, String serverUrl) {
@@ -43,8 +47,10 @@ public final class TuiRenderer {
         int panelBottom = rows - 3;
         int sideWidth = Math.max(20, Math.min(30, cols / 3));
         List<ConversationEntry> conversations = store.conversations();
-        drawSidebar(tg, state, conversations, sideWidth, panelTop, panelBottom);
-        drawChat(tg, state, store, conversations, sideWidth, cols, panelTop, panelBottom);
+        boolean listFocused = state.focus() == TuiState.Focus.CONVERSATIONS;
+        drawSidebar(tg, state, conversations, sideWidth, panelTop, panelBottom, listFocused);
+        drawChat(tg, state, store, conversations, sideWidth, cols, panelTop, panelBottom,
+                !listFocused);
         drawComposer(tg, screen, state, cols, rows - 2);
         drawStatus(tg, state, cols, rows - 1);
         if (state.helpVisible()) {
@@ -66,8 +72,9 @@ public final class TuiRenderer {
     }
 
     private void drawSidebar(TextGraphics tg, TuiState state,
-            List<ConversationEntry> conversations, int width, int top, int bottom) {
-        drawBox(tg, 0, top, width, bottom - top + 1, " Conversations ");
+            List<ConversationEntry> conversations, int width, int top, int bottom,
+            boolean focused) {
+        drawBox(tg, 0, top, width, bottom - top + 1, " Conversations ", focused);
         if (conversations.isEmpty()) {
             tg.putString(1, top + 1, truncate("  (no conversations)", width - 2));
             return;
@@ -89,16 +96,18 @@ public final class TuiRenderer {
     }
 
     private void drawChat(TextGraphics tg, TuiState state, ConversationStore store,
-            List<ConversationEntry> conversations, int left, int cols, int top, int bottom) {
+            List<ConversationEntry> conversations, int left, int cols, int top, int bottom,
+            boolean focused) {
         int width = cols - left;
         if (conversations.isEmpty()) {
-            drawBox(tg, left, top, width, bottom - top + 1, " Conversation ");
+            drawBox(tg, left, top, width, bottom - top + 1, " Conversation ", focused);
             tg.putString(left + 1, top + 1, truncate("No conversations yet.", width - 2));
             return;
         }
         int index = Math.min(state.selectedIndex(), conversations.size() - 1);
         ConversationEntry conversation = conversations.get(index);
-        drawBox(tg, left, top, width, bottom - top + 1, " " + conversation.displayName() + " ");
+        drawBox(tg, left, top, width, bottom - top + 1, " " + conversation.displayName() + " ",
+                focused);
         switch (store.statusOf(conversation.conversationId())) {
             case NOT_LOADED, LOADING ->
                 tg.putString(left + 1, top + 1, truncate("Loading history...", width - 2));
@@ -119,7 +128,8 @@ public final class TuiRenderer {
                         break;
                     }
                     tg.putString(left + 1, row++,
-                            truncate(senderLabel(store, conversation, message) + ": "
+                            truncate(senderLabel(store, conversation, message)
+                                    + formatTimestamp(message.serverTimestamp()) + ": "
                                     + message.content(), width - 2));
                 }
             }
@@ -132,6 +142,17 @@ public final class TuiRenderer {
             return "You";
         }
         return conversation.displayName();
+    }
+
+    /**
+     * Compact rendering of the server-provided timestamp. Zone-less by
+     * contract; displayed exactly as the server sent it.
+     */
+    static String formatTimestamp(LocalDateTime timestamp) {
+        if (timestamp == null) {
+            return "";
+        }
+        return " [" + MESSAGE_TIME.format(timestamp) + "]";
     }
 
     private void drawComposer(TextGraphics tg, Screen screen, TuiState state, int cols, int row) {
@@ -156,7 +177,7 @@ public final class TuiRenderer {
         List<String> lines = List.of(
                 "Up/Down or k/j  Select conversation",
                 "Tab             Move focus (list / composer)",
-                "Enter           Open conversation / composer notice",
+                "Enter           Open conversation / send message",
                 "F1 or ?         Toggle this help",
                 "Esc             Close help",
                 "F10, Ctrl+C     Quit (q quits in the list)",
@@ -171,14 +192,15 @@ public final class TuiRenderer {
         int height = lines.size() + 2 + verticalPadding * 2;
         int left = Math.max(0, (cols - width) / 2);
         int top = Math.max(0, (rows - height) / 2);
-        drawBox(tg, left, top, width, height, " Help ");
+        drawBox(tg, left, top, width, height, " Help ", false);
         for (int i = 0; i < lines.size(); i++) {
             tg.putString(left + 1 + HELP_HORIZONTAL_PADDING, top + 1 + verticalPadding + i,
                     truncate(lines.get(i), width - 2 - HELP_HORIZONTAL_PADDING * 2));
         }
     }
 
-    private void drawBox(TextGraphics tg, int left, int top, int width, int height, String title) {
+    private void drawBox(TextGraphics tg, int left, int top, int width, int height, String title,
+            boolean focused) {
         int right = left + width - 1;
         int bottom = top + height - 1;
         // Fill the interior first so every frame authoritatively repaints
@@ -196,7 +218,11 @@ public final class TuiRenderer {
         tg.drawLine(left, top + 1, left, bottom - 1, Symbols.SINGLE_LINE_VERTICAL);
         tg.drawLine(right, top + 1, right, bottom - 1, Symbols.SINGLE_LINE_VERTICAL);
         if (title != null && !title.isEmpty() && title.length() < width - 2) {
-            tg.putString(left + 1, top, title);
+            if (focused) {
+                tg.putString(left + 1, top, title, SGR.BOLD);
+            } else {
+                tg.putString(left + 1, top, title);
+            }
         }
     }
 

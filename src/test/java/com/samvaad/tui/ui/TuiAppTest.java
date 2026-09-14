@@ -1,6 +1,7 @@
 package com.samvaad.tui.ui;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.samvaad.tui.api.SamvaadApiException;
@@ -54,8 +55,8 @@ class TuiAppTest {
         List<String> calls = new ArrayList<>();
         MessageHistoryLoader loader = (id, after, limit) -> {
             calls.add(id + ":" + after + ":" + limit);
-            return List.of(new MessageEntry(ME, 1, "Hi",
-                    LocalDateTime.of(2026, 9, 14, 10, 0)));
+            return List.of(new MessageEntry(UUID.randomUUID(), ME, 1, "Hi",
+                    LocalDateTime.of(2026, 9, 14, 10, 0), UUID.randomUUID()));
         };
 
         TuiApp.triggerHistoryLoad(store, loader, 0);
@@ -96,6 +97,33 @@ class TuiAppTest {
                 (id, after, limit) -> {
                     throw new AssertionError("loader must not run without conversations");
                 }, 0);
+    }
+
+    @Test
+    void reconcileClearsPendingOnlyOnMatchingBroadcast() {
+        ConversationStore store = store();
+        TuiState state = new TuiState();
+        UUID requestId = UUID.randomUUID();
+        state.setPendingSend(requestId);
+
+        TuiApp.reconcilePendingSend(store, state);
+        assertEquals(requestId, state.pendingSend(),
+                "unrelated messages must not clear another pending send");
+
+        store.markLoading(CONVERSATION_ID);
+        store.putMessages(CONVERSATION_ID, List.of(new MessageEntry(
+                UUID.randomUUID(), ME, 1, "Hi", LocalDateTime.of(2026, 9, 14, 10, 0), requestId)));
+        TuiApp.reconcilePendingSend(store, state);
+        assertNull(state.pendingSend());
+        assertEquals("Sent.", state.status());
+    }
+
+    @Test
+    void reconcileWithoutPendingIsNoop() {
+        TuiState state = new TuiState();
+        state.setStatus("steady");
+        TuiApp.reconcilePendingSend(store(), state);
+        assertEquals("steady", state.status());
     }
 
     private static void waitForStatus(ConversationStore store, ConversationStore.LoadStatus want)

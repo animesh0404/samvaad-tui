@@ -9,6 +9,7 @@ import com.samvaad.tui.api.HttpResult;
 import com.samvaad.tui.api.HttpTransport;
 import com.samvaad.tui.bootstrap.AppBootstrap;
 import com.samvaad.tui.bootstrap.ConsoleIO;
+import com.samvaad.tui.realtime.FakeRealtimeClient;
 import org.junit.jupiter.api.Test;
 import picocli.CommandLine;
 
@@ -17,7 +18,8 @@ class SamvaadTuiCommandTest {
     private static SamvaadTuiCommand parse(String... args) {
         SamvaadTuiCommand command = new SamvaadTuiCommand(
                 new AppBootstrap(new NoopConsoleIO(), new AuthApiClient(new UnusedTransport()),
-                        new ConversationApiClient(new UnusedTransport()), (session) -> { }));
+                        new ConversationApiClient(new UnusedTransport()), new FakeRealtimeClient(),
+                        (session) -> { }));
         new CommandLine(command).parseArgs(args);
         return command;
     }

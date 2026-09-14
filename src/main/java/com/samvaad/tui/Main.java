@@ -6,6 +6,7 @@ import com.samvaad.tui.api.JdkHttpTransport;
 import com.samvaad.tui.bootstrap.AppBootstrap;
 import com.samvaad.tui.bootstrap.SystemConsoleIO;
 import com.samvaad.tui.cli.SamvaadTuiCommand;
+import com.samvaad.tui.realtime.SpringRealtimeClient;
 import com.samvaad.tui.ui.TuiApp;
 import picocli.CommandLine;
 
@@ -26,6 +27,7 @@ public final class Main {
                 new SystemConsoleIO(),
                 new AuthApiClient(transport),
                 new ConversationApiClient(transport),
+                new SpringRealtimeClient(),
                 new TuiApp());
         SamvaadTuiCommand command = new SamvaadTuiCommand(bootstrap);
         int exitCode = new CommandLine(command).execute(args);

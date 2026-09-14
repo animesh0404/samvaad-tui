@@ -163,7 +163,7 @@ class TuiControllerTest {
     }
 
     @Test
-    void enterOpensConversationOrShowsComposerNotice() {
+    void enterOpensConversationOrRequestsSend() {
         TuiState listState = new TuiState();
         controller.handle(key(KeyType.Enter), listState, conversations);
         assertTrue(listState.status().contains("alice"));
@@ -171,9 +171,20 @@ class TuiControllerTest {
         TuiState composerState = new TuiState();
         composerState.toggleFocus();
         composerState.appendToComposer('h');
-        controller.handle(key(KeyType.Enter), composerState, conversations);
-        assertEquals("", composerState.composer());
-        assertTrue(composerState.status().contains("Phase 5"));
+        assertEquals(TuiController.Action.SEND,
+                controller.handle(key(KeyType.Enter), composerState, conversations));
+        assertEquals("h", composerState.composer(),
+                "composer text stays until the send is handed over");
+    }
+
+    @Test
+    void blankComposerEnterHintsInsteadOfSending() {
+        TuiState composerState = new TuiState();
+        composerState.toggleFocus();
+
+        assertEquals(TuiController.Action.CONTINUE,
+                controller.handle(key(KeyType.Enter), composerState, conversations));
+        assertTrue(composerState.status().contains("Type a message"));
     }
 
     @Test

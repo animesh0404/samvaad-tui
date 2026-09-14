@@ -13,8 +13,12 @@ import com.samvaad.tui.config.AppConfigResolver;
 import com.samvaad.tui.model.ConversationEntry;
 import com.samvaad.tui.model.ConversationStore;
 import com.samvaad.tui.model.MessageEntry;
+import com.samvaad.tui.realtime.RealtimeClient;
+import com.samvaad.tui.realtime.RealtimeException;
+import com.samvaad.tui.realtime.RealtimeManager;
 import com.samvaad.tui.session.AuthSession;
 import com.samvaad.tui.session.SessionState;
+import com.samvaad.tui.ui.MessageHistoryLoader;
 import com.samvaad.tui.ui.TuiException;
 import com.samvaad.tui.ui.TuiLauncher;
 import com.samvaad.tui.ui.TuiSession;
@@ -34,13 +38,15 @@ public final class AppBootstrap {
     private final ConsoleIO io;
     private final AuthApiClient authApi;
     private final ConversationApiClient conversationsApi;
+    private final RealtimeClient realtimeClient;
     private final TuiLauncher tui;
 
-    public AppBootstrap(
-            ConsoleIO io, AuthApiClient authApi, ConversationApiClient conversationsApi, TuiLauncher tui) {
+    public AppBootstrap(ConsoleIO io, AuthApiClient authApi, ConversationApiClient conversationsApi,
+            RealtimeClient realtimeClient, TuiLauncher tui) {
         this.io = Objects.requireNonNull(io, "io");
         this.authApi = Objects.requireNonNull(authApi, "authApi");
         this.conversationsApi = Objects.requireNonNull(conversationsApi, "conversationsApi");
+        this.realtimeClient = Objects.requireNonNull(realtimeClient, "realtimeClient");
         this.tui = Objects.requireNonNull(tui, "tui");
     }
 
@@ -88,15 +94,25 @@ public final class AppBootstrap {
             return 1;
         }
         ConversationStore store = new ConversationStore(auth.userId(), entries);
-        TuiSession tuiSession = new TuiSession(config.username(), config.serverUrl(), store,
-                (conversationId, afterSequence, limit) -> loadHistory(
-                        config.serverUrl(), auth.accessToken(), conversationId, afterSequence, limit));
+        MessageHistoryLoader history = (conversationId, afterSequence, limit) -> loadHistory(
+                config.serverUrl(), auth.accessToken(), conversationId, afterSequence, limit);
+        RealtimeManager realtime =
+                new RealtimeManager(realtimeClient, config.serverUrl(), auth.accessToken(), store, history);
+        try {
+            realtime.connect();
+        } catch (RealtimeException e) {
+            System.err.println("Warning: realtime unavailable (" + e.getMessage() + "). History only.");
+        }
+        TuiSession tuiSession =
+                new TuiSession(config.username(), config.serverUrl(), store, history, realtime);
         int tuiExit = 0;
         try {
             tui.launch(tuiSession);
         } catch (TuiException e) {
             System.err.println("Error: " + e.getMessage());
             tuiExit = 1;
+        } finally {
+            realtime.disconnect();
         }
         try {
             authApi.logout(config.serverUrl(), auth.accessToken());
@@ -131,10 +147,12 @@ public final class AppBootstrap {
         List<MessageEntry> entries = new ArrayList<>(responses.size());
         for (MessageResponse response : responses) {
             entries.add(new MessageEntry(
+                    response.messageId(),
                     response.senderUserId(),
                     response.sequenceNumber(),
                     response.content(),
-                    response.serverTimestamp()));
+                    response.serverTimestamp(),
+                    response.requestId()));
         }
         return entries;
     }
