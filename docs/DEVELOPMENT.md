@@ -37,8 +37,7 @@ Show CLI help:
 
 The `jar` task declares `Main-Class: com.samvaad.tui.Main`, so the built
 JAR carries a correct executable entry point. It is a thin JAR: runtime
-dependencies (picocli, Jackson, Lanterna) remain external, so plain
-`java -jar` is not standalone.
+dependencies remain external, so plain `java -jar` is not standalone.
 
 The primary V1 distribution mechanism is the Gradle application
 distribution (`installDist`, `distZip`, `distTar`), which bundles the JAR,
@@ -47,51 +46,80 @@ all runtime dependencies, and the `samvaad-tui` launcher. No fat/uber JAR
 
 ## TUI development
 
-Phase 3 established the Lanterna `3.1.5` fullscreen shell. Phase 4 keeps the
-same UI boundary but replaces preview data with server-backed conversation and
-message state.
+Phase 3 established the Lanterna `3.1.5` fullscreen shell. Phase 4 replaced
+preview data with server-backed conversation/message state. Phase 5 adds
+message sending and realtime delivery.
 
 Responsibilities:
 
-- `TuiApp` owns terminal lifecycle, render/input loop, and lazy history-load worker creation.
-- `TuiController` owns keyboard-to-state transitions.
-- `TuiRenderer` owns terminal presentation.
+- `TuiApp` owns terminal lifecycle, the polling render/input loop, and background worker coordination.
+- `TuiController` owns keyboard-to-state transitions and composer/send interaction.
+- `TuiRenderer` owns terminal presentation, including active-pane focus, message timestamps, and send status.
 - `TuiLauncher` is the bootstrap seam.
-- `TuiSession` is a token-free bundle of UI display context, conversation state, and history-loading behavior.
-- `ConversationStore` owns in-memory server-backed conversation/message presentation state and preserves server ordering.
+- `TuiSession` is a token-free bundle of UI display context, conversation state, history-loading behavior, and realtime operations.
+- `ConversationStore` owns in-memory server-backed conversation/message presentation state, preserves server ordering, deduplicates authoritative messages, and tracks high-water versus locally loaded sequence.
 - `ConversationApiClient` owns the verified conversation/history HTTP reads.
-- `MessageHistoryLoader` keeps the UI's history-loading operation behind a small seam for testing.
+- `MessageHistoryLoader` keeps history loading behind a small seam for testing and realtime catch-up.
+- `RealtimeClient` is the transport seam.
+- `SpringRealtimeClient` implements the verified WebSocket/STOMP contract.
+- `RealtimeManager` owns connection lifecycle, conversation subscriptions, sending, bounded reconnect, catch-up, and token containment.
 
 Current bindings:
 
 ```text
 Up / Down / k / j  select conversation
 Tab                 switch focus
-Enter               open selected item / composer notice
+Enter               open selected item / composer or send message
 F1 / ?              help
 Esc                 close help / return focus to conversations
 F10 / Ctrl+C        quit
 q (conversation list) quit
 ```
 
-Navigation does not wrap at list boundaries. Help is an overlay, but terminal
-escape-sequence edge cases are handled so an unexpected merged key cannot
-strand the UI in the help state. The renderer paints owned cells explicitly,
-clears stale interior characters through normal frame rendering, handles
-resize-triggered full redraws, and derives Help geometry from content with
-symmetric padding and narrow-terminal clamping.
+The active pane is visibly indicated. Messages display server-provided
+`LocalDateTime` values without timezone conversion. A send remains `Sending...`
+until the authoritative realtime broadcast carrying the matching request ID
+is observed, then becomes `Sent`.
 
-Phase 4 conversation/history behavior:
+The renderer paints owned cells explicitly, handles resize-triggered redraws,
+and derives Help geometry from content with padding and narrow-terminal
+clamping. The polling render loop ensures background history/realtime changes
+become visible while the user is idle.
 
-- conversation list comes from `GET /api/conversations/direct?limit&offset`;
-- server-provided conversation order is preserved verbatim;
-- selecting a conversation triggers initial history loading with `afterSequence=0&limit=20`;
-- history HTTP runs on a daemon worker so the UI thread remains responsive;
-- messages are displayed in server-provided ascending sequence order;
-- `lastSequenceNumber` is retained as the server high-water mark while `highestLoadedSequence` tracks locally loaded messages separately;
-- no load-more UI is implemented yet;
-- loading, empty, and error states are rendered explicitly;
-- no message sending, realtime, friends/search, or friend-request APIs are called in Phase 4.
+## HTTP and realtime behavior
+
+The conversation/history HTTP paths remain:
+
+```text
+GET /api/conversations/direct?limit&offset
+GET /api/conversations/direct/{conversationId}/messages?afterSequence&limit
+```
+
+Phase 5 realtime paths are:
+
+```text
+WebSocket /ws
+STOMP SEND /app/chat.send
+STOMP SUBSCRIBE /topic/conversations/{conversationId}
+```
+
+STOMP CONNECT uses `Authorization: Bearer <access-token>`. The same access JWT
+used for HTTP is used for realtime. `SpringRealtimeClient` is a client-side
+library adapter only; the TUI does not become a Spring Boot application and
+does not host a server.
+
+The send payload supplies conversation ID, message content, and a fresh UUID
+`requestId`. Message ID, sequence number, timestamp, and sender identity remain
+server-owned. The client does not retry sends and does not optimistically mark
+messages as persisted.
+
+On unexpected realtime loss, `RealtimeManager` performs bounded reconnect,
+resubscribes to the selected conversation, and requests history after the
+store's `highestLoadedSequence`. The transport itself does not retry.
+
+The server's `/user/queue/errors` destination is not subscribed because its
+client wiring was not established by the verified contract. ERROR frames and
+session callbacks are the current realtime error path.
 
 ## CLI behavior
 
@@ -111,12 +139,14 @@ Current flow:
 4. call login
 5. establish in-memory authenticated session and user id from JWT `sub`
 6. load the server conversation list
-7. enter the fullscreen TUI shell
-8. lazily load selected conversation history
-9. exit the TUI
-10. call server logout
-11. clear local session state
-12. exit
+7. establish realtime connection using the same access JWT
+8. enter the fullscreen TUI shell
+9. lazily load selected conversation history and subscribe to it
+10. send/receive messages through the realtime manager
+11. disconnect realtime
+12. call server logout
+13. clear local session state
+14. exit
 
 Exit codes:
 
@@ -126,17 +156,19 @@ Exit codes:
 
 ## Testing approach
 
-API tests use the `HttpTransport` seam and a fake transport rather than requiring a running server. Conversation API tests verify exact paths/query parameters, JSON parsing including nullable participant usernames and `LocalDateTime`, malformed responses, transport failures, and 400/401/403/404 mappings. Session tests cover authentication state, token replacement, and authenticated user-id handling. Model tests cover server-order preservation and the distinction between server high-water marks and locally loaded sequence. TUI state/controller tests exercise keyboard bindings and history-loading transitions, and renderer tests use a virtual terminal where practical.
+API tests use the `HttpTransport` seam and a fake transport rather than requiring a running server. Conversation API tests verify exact paths/query parameters, JSON parsing including nullable participant usernames and `LocalDateTime`, malformed responses, transport failures, and 400/401/403/404 mappings. Session tests cover authentication state, token replacement, and authenticated user-id handling. Model tests cover server-order preservation, authoritative message merge/deduplication, and the distinction between server high-water marks and locally loaded sequence. TUI state/controller/renderer/app tests cover keyboard interaction, focus, timestamps, send-state transitions, background repaint, and lifecycle behavior.
 
-A live server smoke test can be used for end-to-end authentication, server-backed conversation/history loading, logout/revocation, and terminal lifecycle verification. Use disposable test data and never commit credentials or tokens.
+Realtime tests cover the transport seam, URL/destination/payload behavior, subscription replacement/deduplication, request-ID generation, authoritative message merge, bounded reconnect/resubscription, history catch-up, notices, and disconnect behavior without requiring a live socket.
 
-The current Phase 4 baseline has **106 automated tests passing**. The Phase 3 renderer/input regressions remain covered as part of that suite.
+A live server smoke test should use disposable data and a real terminal. Phase 5 was manually and automatically verified with two clients: both authenticated, subscribed to the same conversation, exchanged messages in both directions, observed server timestamps and authoritative persistence, and exited through realtime disconnect followed by HTTP logout/session revocation. Temporary fixtures were removed afterward.
+
+The current Phase 5 baseline has **131 automated tests passing**.
 
 ## Dependency policy
 
-Keep the client dependency footprint small. Current primary runtime dependencies are picocli, Jackson (including `jackson-datatype-jsr310` for server `LocalDateTime`), and Lanterna. JUnit is test-only. Do not introduce a server framework or persistence technology to solve a client concern without a concrete requirement.
+Keep the client dependency footprint small. Current runtime dependencies are picocli, Jackson (including `jackson-datatype-jsr310` for server `LocalDateTime`), Lanterna, Spring WebSocket, Spring Messaging, and the Tomcat WebSocket implementation used by the standard WebSocket client. JUnit is test-only.
 
-WebSocket/STOMP dependencies belong to a future implementation phase and should be introduced only when realtime capability is actually implemented.
+Spring WebSocket/Messaging are used only as client-side protocol libraries. Do not introduce Spring Boot, an embedded server, a broker, ORM/persistence, or another framework to solve a client concern without a concrete requirement.
 
 ## Implementation workflow
 
