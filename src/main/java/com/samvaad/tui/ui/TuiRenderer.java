@@ -8,10 +8,13 @@ import com.googlecode.lanterna.graphics.TextGraphics;
 import com.googlecode.lanterna.screen.Screen;
 import com.samvaad.tui.model.ConversationEntry;
 import com.samvaad.tui.model.ConversationStore;
+import com.samvaad.tui.model.FriendRequestEntry;
+import com.samvaad.tui.model.FriendRequestStore;
 import com.samvaad.tui.model.MessageEntry;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Draws the whole TUI shell on every input event: header, conversation
@@ -26,12 +29,17 @@ public final class TuiRenderer {
     static final int MIN_ROWS = 12;
 
     private static final String STATUS_HINTS =
-            "Up/Down select - Tab focus - Enter open - ? help - F10 quit";
+            "Up/Down select - Tab focus - Enter open - / search - r requests - ? help - F10 quit";
 
     static final DateTimeFormatter MESSAGE_TIME = DateTimeFormatter.ofPattern("MM-dd HH:mm");
 
     public void render(Screen screen, TuiState state, ConversationStore store,
             String username, String serverUrl) {
+        render(screen, state, store, username, serverUrl, new FriendRequestStore());
+    }
+
+    public void render(Screen screen, TuiState state, ConversationStore store,
+            String username, String serverUrl, FriendRequestStore friendStore) {
         TerminalSize size = screen.getTerminalSize();
         int cols = size.getColumns();
         int rows = size.getRows();
@@ -49,9 +57,20 @@ public final class TuiRenderer {
         List<ConversationEntry> conversations = store.conversations();
         boolean listFocused = state.focus() == TuiState.Focus.CONVERSATIONS;
         drawSidebar(tg, state, conversations, sideWidth, panelTop, panelBottom, listFocused);
-        drawChat(tg, state, store, conversations, sideWidth, cols, panelTop, panelBottom,
-                !listFocused);
-        drawComposer(tg, screen, state, cols, rows - 2);
+        if (state.view() == TuiState.View.SEARCH) {
+            drawSearch(tg, screen, state, friendStore, sideWidth, cols, panelTop, panelBottom);
+        } else if (state.view() == TuiState.View.REQUESTS) {
+            drawRequests(tg, state, friendStore, store.currentUserId(), sideWidth, cols,
+                    panelTop, panelBottom);
+        } else {
+            drawChat(tg, state, store, conversations, sideWidth, cols, panelTop, panelBottom,
+                    !listFocused);
+        }
+        if (state.view() == TuiState.View.CHAT) {
+            drawComposer(tg, screen, state, cols, rows - 2);
+        } else {
+            drawModeLine(tg, screen, state, cols, rows - 2);
+        }
         drawStatus(tg, state, cols, rows - 1);
         if (state.helpVisible()) {
             drawHelp(tg, cols, rows);
@@ -155,6 +174,152 @@ public final class TuiRenderer {
         return " [" + MESSAGE_TIME.format(timestamp) + "]";
     }
 
+    private void drawSearch(TextGraphics tg, Screen screen, TuiState state,
+            FriendRequestStore friendStore, int left, int cols, int top, int bottom) {
+        int width = cols - left;
+        drawBox(tg, left, top, width, bottom - top + 1, " Search user ", true);
+        int inner = width - 2;
+        int row = top + 1;
+        if (row >= bottom) {
+            return;
+        }
+        boolean inputFocused = state.searchFocus() == TuiState.SearchFocus.INPUT;
+        String prompt = inputFocused ? "> " : "  ";
+        String input = prompt + "Exact username: " + state.searchInput();
+        tg.putString(left + 1, row++, truncate(padRight(input, inner), inner),
+                inputFocused ? SGR.REVERSE : SGR.BOLD);
+        if (row >= bottom) {
+            return;
+        }
+        switch (friendStore.lookupStatus()) {
+            case NOT_LOADED ->
+                tg.putString(left + 1, row++, truncate("Type a username, Enter to look up.", inner));
+            case LOADING ->
+                tg.putString(left + 1, row++, truncate("Looking up...", inner));
+            case ERROR -> {
+                String error = friendStore.lookupError();
+                tg.putString(left + 1, row++,
+                        truncate(error != null ? error : "User lookup failed.", inner));
+            }
+            case LOADED -> {
+                if (friendStore.lookupResult() != null) {
+                    tg.putString(left + 1, row++,
+                            truncate("Found: " + friendStore.lookupResult().username(), inner));
+                }
+            }
+        }
+        if (row >= bottom) {
+            return;
+        }
+        if (friendStore.lookupResult() != null
+                && friendStore.lookupStatus() == FriendRequestStore.LoadStatus.LOADED) {
+            boolean sendFocused = state.searchFocus() == TuiState.SearchFocus.SEND;
+            String send = (sendFocused ? "> " : "  ") + "[Send friend request]";
+            tg.putString(left + 1, row++, truncate(padRight(send, inner), inner),
+                    sendFocused ? SGR.REVERSE : SGR.BOLD);
+        }
+        if (row >= bottom) {
+            return;
+        }
+        tg.putString(left + 1, row, truncate("Enter lookup - Tab send - Esc back", inner));
+        if (inputFocused) {
+            screen.setCursorPosition(new TerminalPosition(
+                    left + 1 + prompt.length() + "Exact username: ".length()
+                            + state.searchInput().length(),
+                    top + 1));
+        }
+    }
+
+    private void drawRequests(TextGraphics tg, TuiState state, FriendRequestStore friendStore,
+            UUID currentUserId, int left, int cols, int top, int bottom) {
+        int width = cols - left;
+        drawBox(tg, left, top, width, bottom - top + 1, " Friend requests ", true);
+        int inner = width - 2;
+        int row = top + 1;
+        if (row >= bottom) {
+            return;
+        }
+        List<FriendRequestEntry> incoming = friendStore.incoming();
+        List<FriendRequestEntry> outgoing = friendStore.outgoing();
+        boolean incomingActive = state.requestSection() == TuiState.RequestSection.INCOMING;
+        String tabs = (incomingActive ? "> " : "  ") + "Incoming (" + incoming.size() + ")   "
+                + (!incomingActive ? "> " : "  ") + "Outgoing (" + outgoing.size() + ")";
+        tg.putString(left + 1, row++, truncate(padRight(tabs, inner), inner), SGR.BOLD);
+        if (row >= bottom) {
+            return;
+        }
+        if (incomingActive) {
+            row = drawRequestList(tg, state, friendStore.incomingStatus(), friendStore.incomingError(),
+                    incoming, currentUserId, true, left, row, bottom, inner);
+            if (row < bottom) {
+                tg.putString(left + 1, row,
+                        truncate("a accept - x reject - Enter accept - g refresh - Esc back", inner));
+            }
+        } else {
+            row = drawRequestList(tg, state, friendStore.outgoingStatus(), friendStore.outgoingError(),
+                    outgoing, currentUserId, false, left, row, bottom, inner);
+            if (row < bottom) {
+                tg.putString(left + 1, row,
+                        truncate("c cancel - Enter cancel - g refresh - Esc back", inner));
+            }
+        }
+    }
+
+    private int drawRequestList(TextGraphics tg, TuiState state, FriendRequestStore.LoadStatus status,
+            String error, List<FriendRequestEntry> entries, UUID currentUserId,
+            boolean isIncoming, int left, int row, int bottom, int inner) {
+        switch (status) {
+            case NOT_LOADED -> {
+                if (row < bottom) {
+                    tg.putString(left + 1, row++, truncate("Loading...", inner));
+                }
+                return row;
+            }
+            case LOADING -> {
+                if (entries.isEmpty() && row < bottom) {
+                    tg.putString(left + 1, row++, truncate("Loading...", inner));
+                    return row;
+                }
+            }
+            case ERROR -> {
+                if (row < bottom) {
+                    tg.putString(left + 1, row++,
+                            truncate(error != null ? error : "Could not load requests.", inner));
+                }
+                return row;
+            }
+            case LOADED -> {
+                if (entries.isEmpty() && row < bottom) {
+                    tg.putString(left + 1, row++, truncate("(none)", inner));
+                    return row;
+                }
+            }
+        }
+        for (int i = 0; i < entries.size(); i++) {
+            if (row >= bottom) {
+                break;
+            }
+            FriendRequestEntry entry = entries.get(i);
+            String name = isIncoming ? entry.senderUsername() : entry.recipientUsername();
+            if (name == null) {
+                name = "Unknown user";
+            }
+            boolean selected = i == state.requestSelectedIndex();
+            String line = (selected ? "> " : "  ") + name;
+            tg.putString(left + 1, row++, truncate(padRight(line, inner), inner),
+                    selected ? SGR.REVERSE : SGR.BOLD);
+        }
+        return row;
+    }
+
+    private void drawModeLine(TextGraphics tg, Screen screen, TuiState state, int cols, int row) {
+        String hint = state.view() == TuiState.View.SEARCH
+                ? "Search: type username, Enter lookup, Tab send, Esc back"
+                : "Requests: Tab section, a/x/c act, g refresh, Esc back";
+        tg.putString(0, row, padRight(truncate(hint, cols), cols));
+        screen.setCursorPosition(null);
+    }
+
     private void drawComposer(TextGraphics tg, Screen screen, TuiState state, int cols, int row) {
         String prompt = "> ";
         tg.putString(0, row, prompt);
@@ -178,12 +343,17 @@ public final class TuiRenderer {
                 "Up/Down or k/j  Select conversation",
                 "Tab             Move focus (list / composer)",
                 "Enter           Open conversation / send message",
+                "/               Search user by exact username",
+                "r               Friend requests (incoming/outgoing)",
                 "F1 or ?         Toggle this help",
                 "Esc             Close help",
                 "F10, Ctrl+C     Quit (q quits in the list)",
                 "",
-                "Message sending and friends arrive in",
-                "later phases.");
+                "In search: type, Enter lookup, Tab to Send,",
+                "Enter sends the friend request, Esc back.",
+                "In requests: Tab section, Up/Down select,",
+                "a accept, x reject, c cancel, Enter primary,",
+                "g refresh, Esc or q back.");
         int contentWidth = lines.stream().mapToInt(String::length).max().orElse(0);
         int width = Math.min(cols - 2, contentWidth + HELP_HORIZONTAL_PADDING * 2 + 2);
         // Only pad vertically when the terminal fits the padded box;

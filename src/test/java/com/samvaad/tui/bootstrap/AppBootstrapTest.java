@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.samvaad.tui.api.AuthApiClient;
 import com.samvaad.tui.api.ConversationApiClient;
 import com.samvaad.tui.api.FakeHttpTransport;
+import com.samvaad.tui.api.FriendRequestApiClient;
+import com.samvaad.tui.api.UserLookupApiClient;
 import com.samvaad.tui.auth.TestTokens;
 import com.samvaad.tui.realtime.FakeRealtimeClient;
 import com.samvaad.tui.realtime.RealtimeException;
@@ -38,7 +40,8 @@ class AppBootstrapTest {
             FakeConsoleIO io, FakeHttpTransport transport, FakeRealtimeClient realtime,
             TuiLauncher tui) {
         return new AppBootstrap(io, new AuthApiClient(transport),
-                new ConversationApiClient(transport), realtime, tui);
+                new ConversationApiClient(transport), new UserLookupApiClient(transport),
+                new FriendRequestApiClient(transport), realtime, tui);
     }
 
     private static void queueLoginListLogout(FakeHttpTransport transport) {
@@ -246,6 +249,36 @@ class AppBootstrapTest {
         public void launch(TuiSession session) {
             this.session = session;
         }
+    }
+
+    @Test
+    void launchesTuiWithFriendStoreAndTokenFreeSeam() {
+        FakeConsoleIO io = new FakeConsoleIO();
+        io.setPassword("s3cret".toCharArray());
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, AUTH_JSON);
+        transport.addJson(200, LIST_JSON);
+        transport.addJson(200, "{\"userId\":\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\","
+                + "\"username\":\"bob\"}");
+        transport.addJson(200, "");
+        RecordingTui tui = new RecordingTui();
+        var lookedUp = new Object() {
+            com.samvaad.tui.model.UserLookupEntry entry;
+        };
+
+        int exit = bootstrap(io, transport, new FakeRealtimeClient(), (session) -> {
+            tui.launch(session);
+            lookedUp.entry = session.friends().lookup("bob");
+        }).run(new CliOptions("http://localhost:8080", "alice"));
+
+        assertEquals(0, exit);
+        assertTrue(tui.session.friendStore() != null, "session carries friend-request state");
+        assertTrue(tui.session.friends() != null, "session carries the friend service seam");
+
+        assertEquals("bob", lookedUp.entry.username());
+        assertEquals("/api/users/lookup?username=bob", transport.calls().get(2).path());
+        assertEquals(ACCESS, transport.calls().get(2).bearerToken(),
+                "seam forwards the session token without exposing it to the UI");
     }
 
     @Test

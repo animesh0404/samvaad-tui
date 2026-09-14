@@ -10,7 +10,10 @@ import com.googlecode.lanterna.terminal.ansi.UnixLikeTerminal;
 import com.samvaad.tui.api.SamvaadApiException;
 import com.samvaad.tui.model.ConversationEntry;
 import com.samvaad.tui.model.ConversationStore;
+import com.samvaad.tui.model.FriendRequestEntry;
+import com.samvaad.tui.model.FriendRequestStore;
 import com.samvaad.tui.model.MessageEntry;
+import com.samvaad.tui.model.UserLookupEntry;
 import com.samvaad.tui.realtime.RealtimeException;
 import java.io.IOException;
 import java.util.List;
@@ -29,9 +32,12 @@ public final class TuiApp implements TuiLauncher {
 
     static final int HISTORY_LIMIT = 20;
     static final int POLL_MILLIS = 50;
+    static final long REQUEST_REFRESH_MILLIS = 30_000;
 
     private final TuiController controller = new TuiController();
     private final TuiRenderer renderer = new TuiRenderer();
+    private volatile boolean requestsRefreshing;
+    private volatile long lastRequestRefresh;
 
     @Override
     public void launch(TuiSession session) {
@@ -74,7 +80,9 @@ public final class TuiApp implements TuiLauncher {
             ensureSubscribed(session, state);
             drainRealtimeNotice(session, state);
             reconcilePendingSend(session.store(), state);
-            renderer.render(screen, state, session.store(), session.username(), session.serverUrl());
+            maybeRefreshRequests(session, state);
+            renderer.render(screen, state, session.store(), session.username(), session.serverUrl(),
+                    session.friendStore());
             screen.refresh();
             KeyStroke key = screen.pollInput();
             if (key == null) {
@@ -86,13 +94,33 @@ public final class TuiApp implements TuiLauncher {
                 }
                 continue;
             }
-            TuiController.Action action =
-                    controller.handle(key, state, session.store().conversations());
+            TuiController.Action action = controller.handle(key, state,
+                    session.store().conversations(),
+                    session.friendStore().incoming().size(),
+                    session.friendStore().outgoing().size());
             if (action == TuiController.Action.QUIT) {
                 return;
             }
             if (action == TuiController.Action.SEND) {
                 sendComposer(session, state);
+            }
+            if (action == TuiController.Action.LOOKUP_USER) {
+                lookupUser(session, state);
+            }
+            if (action == TuiController.Action.SEND_FRIEND_REQUEST) {
+                sendFriendRequest(session, state);
+            }
+            if (action == TuiController.Action.ACCEPT_REQUEST) {
+                acceptRequest(session, state);
+            }
+            if (action == TuiController.Action.REJECT_REQUEST) {
+                rejectRequest(session, state);
+            }
+            if (action == TuiController.Action.CANCEL_REQUEST) {
+                cancelRequest(session, state);
+            }
+            if (action == TuiController.Action.REFRESH_REQUESTS) {
+                refreshRequests(session, state, true);
             }
         }
     }
@@ -132,6 +160,276 @@ public final class TuiApp implements TuiLauncher {
         if (notice != null) {
             state.setStatus(notice);
         }
+    }
+
+    /**
+     * Looks up the username currently in the search box on a daemon
+     * worker so HTTP never blocks the UI thread.
+     */
+    private void lookupUser(TuiSession session, TuiState state) {
+        String username = state.searchInput();
+        if (username.isBlank()) {
+            state.setStatus("Type a username first.");
+            return;
+        }
+        FriendRequestStore friendStore = session.friendStore();
+        friendStore.markLookupLoading();
+        state.setStatus("Looking up " + username.trim() + "...");
+        Thread worker = new Thread(() -> {
+            try {
+                UserLookupEntry found = session.friends().lookup(username);
+                friendStore.putLookupResult(found);
+                state.setStatus("Found " + found.username() + ". Tab to send, Enter on Send.");
+            } catch (SamvaadApiException e) {
+                friendStore.putLookupError(friendLookupMessage(e));
+                state.setStatus(friendLookupMessage(e));
+            } catch (RuntimeException e) {
+                friendStore.putLookupError("Could not look up user.");
+                state.setStatus("Could not look up user.");
+            }
+        }, "samvaad-user-lookup");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    /**
+     * Sends a friend request to the last successfully looked-up user.
+     */
+    private void sendFriendRequest(TuiSession session, TuiState state) {
+        UserLookupEntry target = session.friendStore().lookupResult();
+        if (target == null) {
+            state.setStatus("Look up a user first.");
+            return;
+        }
+        state.setStatus("Sending friend request to " + target.username() + "...");
+        Thread worker = new Thread(() -> {
+            try {
+                session.friends().sendRequest(target.username());
+                state.setStatus("Friend request sent to " + target.username() + ".");
+                refreshRequests(session, state, true);
+            } catch (SamvaadApiException e) {
+                state.setStatus(friendSendMessage(e));
+            } catch (RuntimeException e) {
+                state.setStatus("Could not send friend request.");
+            }
+        }, "samvaad-friend-send");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private void acceptRequest(TuiSession session, TuiState state) {
+        FriendRequestEntry selected = selectedIncoming(session, state);
+        if (selected == null) {
+            state.setStatus("No incoming request selected.");
+            return;
+        }
+        state.setStatus("Accepting request from " + selected.senderUsername() + "...");
+        Thread worker = new Thread(() -> {
+            try {
+                FriendRequestEntry updated = session.friends().accept(selected.requestId());
+                state.setStatus("Accepted friend request from " + updated.senderUsername() + ".");
+                refreshRequests(session, state, true);
+            } catch (SamvaadApiException e) {
+                state.setStatus(friendMutationMessage(e, "Accept"));
+            } catch (RuntimeException e) {
+                state.setStatus("Could not accept request.");
+            }
+        }, "samvaad-friend-accept");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private void rejectRequest(TuiSession session, TuiState state) {
+        FriendRequestEntry selected = selectedIncoming(session, state);
+        if (selected == null) {
+            state.setStatus("No incoming request selected.");
+            return;
+        }
+        state.setStatus("Rejecting request from " + selected.senderUsername() + "...");
+        Thread worker = new Thread(() -> {
+            try {
+                FriendRequestEntry updated = session.friends().reject(selected.requestId());
+                state.setStatus("Rejected friend request from " + updated.senderUsername() + ".");
+                refreshRequests(session, state, true);
+            } catch (SamvaadApiException e) {
+                state.setStatus(friendMutationMessage(e, "Reject"));
+            } catch (RuntimeException e) {
+                state.setStatus("Could not reject request.");
+            }
+        }, "samvaad-friend-reject");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private void cancelRequest(TuiSession session, TuiState state) {
+        FriendRequestEntry selected = selectedOutgoing(session, state);
+        if (selected == null) {
+            state.setStatus("No outgoing request selected.");
+            return;
+        }
+        state.setStatus("Cancelling request to " + selected.recipientUsername() + "...");
+        Thread worker = new Thread(() -> {
+            try {
+                FriendRequestEntry updated = session.friends().cancel(selected.requestId());
+                state.setStatus(
+                        "Cancelled friend request to " + updated.recipientUsername() + ".");
+                refreshRequests(session, state, true);
+            } catch (SamvaadApiException e) {
+                state.setStatus(friendMutationMessage(e, "Cancel"));
+            } catch (RuntimeException e) {
+                state.setStatus("Could not cancel request.");
+            }
+        }, "samvaad-friend-cancel");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private static FriendRequestEntry selectedIncoming(TuiSession session, TuiState state) {
+        if (state.requestSection() != TuiState.RequestSection.INCOMING) {
+            return null;
+        }
+        List<FriendRequestEntry> incoming = session.friendStore().incoming();
+        if (incoming.isEmpty()) {
+            return null;
+        }
+        int index = Math.min(state.requestSelectedIndex(), incoming.size() - 1);
+        return incoming.get(index);
+    }
+
+    private static FriendRequestEntry selectedOutgoing(TuiSession session, TuiState state) {
+        if (state.requestSection() != TuiState.RequestSection.OUTGOING) {
+            return null;
+        }
+        List<FriendRequestEntry> outgoing = session.friendStore().outgoing();
+        if (outgoing.isEmpty()) {
+            return null;
+        }
+        int index = Math.min(state.requestSelectedIndex(), outgoing.size() - 1);
+        return outgoing.get(index);
+    }
+
+    /**
+     * Refreshes both pending lists on a daemon worker. Explicit refreshes
+     * (entering the view, mutations, manual key) always run; the periodic
+     * tick only refreshes while the REQUESTS view is visible.
+     */
+    private void refreshRequests(TuiSession session, TuiState state, boolean explicit) {
+        if (!explicit && state.view() != TuiState.View.REQUESTS) {
+            return;
+        }
+        if (requestsRefreshing) {
+            return;
+        }
+        requestsRefreshing = true;
+        lastRequestRefresh = System.currentTimeMillis();
+        FriendRequestStore friendStore = session.friendStore();
+        friendStore.markIncomingLoading();
+        friendStore.markOutgoingLoading();
+        Thread worker = new Thread(() -> {
+            try {
+                try {
+                    friendStore.putIncoming(session.friends().refreshIncoming());
+                } catch (SamvaadApiException e) {
+                    friendStore.putIncomingError(friendListMessage(e));
+                }
+                try {
+                    friendStore.putOutgoing(session.friends().refreshOutgoing());
+                } catch (SamvaadApiException e) {
+                    friendStore.putOutgoingError(friendListMessage(e));
+                }
+                state.clampRequestSelection(
+                        state.requestSection() == TuiState.RequestSection.INCOMING
+                                ? friendStore.incoming().size()
+                                : friendStore.outgoing().size());
+            } catch (RuntimeException e) {
+                friendStore.putIncomingError("Could not load friend requests.");
+                friendStore.putOutgoingError("Could not load friend requests.");
+            } finally {
+                requestsRefreshing = false;
+            }
+        }, "samvaad-friend-refresh");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    /**
+     * Periodic refresh while the REQUESTS view is visible. Background
+     * completions repaint through the existing polling render loop.
+     */
+    private void maybeRefreshRequests(TuiSession session, TuiState state) {
+        if (state.view() != TuiState.View.REQUESTS || requestsRefreshing) {
+            return;
+        }
+        if (System.currentTimeMillis() - lastRequestRefresh >= REQUEST_REFRESH_MILLIS) {
+            refreshRequests(session, state, false);
+        }
+    }
+
+    static String friendLookupMessage(SamvaadApiException e) {
+        if (e.kind() == SamvaadApiException.Kind.SERVER_UNAVAILABLE) {
+            return "Cannot reach server.";
+        }
+        if (e.kind() == SamvaadApiException.Kind.MALFORMED_RESPONSE) {
+            return "Malformed server response.";
+        }
+        if (e.kind() == SamvaadApiException.Kind.AUTHENTICATION_FAILED) {
+            return "Session expired. Restart and log in again.";
+        }
+        return switch (e.statusCode()) {
+            case 400 -> "Invalid username.";
+            case 404 -> "User not found.";
+            default -> "User lookup failed (HTTP " + e.statusCode() + ").";
+        };
+    }
+
+    static String friendSendMessage(SamvaadApiException e) {
+        if (e.kind() == SamvaadApiException.Kind.SERVER_UNAVAILABLE) {
+            return "Cannot reach server.";
+        }
+        if (e.kind() == SamvaadApiException.Kind.MALFORMED_RESPONSE) {
+            return "Malformed server response.";
+        }
+        if (e.kind() == SamvaadApiException.Kind.AUTHENTICATION_FAILED) {
+            return "Session expired. Restart and log in again.";
+        }
+        return switch (e.statusCode()) {
+            case 400 -> "Invalid username.";
+            case 403 -> "Cannot send a friend request to yourself.";
+            case 404 -> "User not found.";
+            case 409 -> "Friend request already pending or already friends.";
+            default -> "Send friend request failed (HTTP " + e.statusCode() + ").";
+        };
+    }
+
+    static String friendMutationMessage(SamvaadApiException e, String operation) {
+        if (e.kind() == SamvaadApiException.Kind.SERVER_UNAVAILABLE) {
+            return "Cannot reach server.";
+        }
+        if (e.kind() == SamvaadApiException.Kind.MALFORMED_RESPONSE) {
+            return "Malformed server response.";
+        }
+        if (e.kind() == SamvaadApiException.Kind.AUTHENTICATION_FAILED) {
+            return "Session expired. Restart and log in again.";
+        }
+        return switch (e.statusCode()) {
+            case 403 -> operation + " not allowed for this request.";
+            case 404 -> "Friend request not found.";
+            case 409 -> "Friend request is no longer pending.";
+            default -> operation + " failed (HTTP " + e.statusCode() + ").";
+        };
+    }
+
+    static String friendListMessage(SamvaadApiException e) {
+        if (e.kind() == SamvaadApiException.Kind.SERVER_UNAVAILABLE) {
+            return "Cannot reach server.";
+        }
+        if (e.kind() == SamvaadApiException.Kind.MALFORMED_RESPONSE) {
+            return "Malformed server response.";
+        }
+        if (e.kind() == SamvaadApiException.Kind.AUTHENTICATION_FAILED) {
+            return "Session expired. Restart and log in again.";
+        }
+        return "Could not load friend requests (HTTP " + e.statusCode() + ").";
     }
 
     /**

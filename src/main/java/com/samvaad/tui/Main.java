@@ -2,7 +2,9 @@ package com.samvaad.tui;
 
 import com.samvaad.tui.api.AuthApiClient;
 import com.samvaad.tui.api.ConversationApiClient;
+import com.samvaad.tui.api.FriendRequestApiClient;
 import com.samvaad.tui.api.JdkHttpTransport;
+import com.samvaad.tui.api.UserLookupApiClient;
 import com.samvaad.tui.bootstrap.AppBootstrap;
 import com.samvaad.tui.bootstrap.SystemConsoleIO;
 import com.samvaad.tui.cli.SamvaadTuiCommand;
@@ -27,6 +29,8 @@ public final class Main {
                 new SystemConsoleIO(),
                 new AuthApiClient(transport),
                 new ConversationApiClient(transport),
+                new UserLookupApiClient(transport),
+                new FriendRequestApiClient(transport),
                 new SpringRealtimeClient(),
                 new TuiApp());
         SamvaadTuiCommand command = new SamvaadTuiCommand(bootstrap);

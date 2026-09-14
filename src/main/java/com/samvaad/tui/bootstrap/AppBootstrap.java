@@ -2,22 +2,30 @@ package com.samvaad.tui.bootstrap;
 
 import com.samvaad.tui.api.AuthApiClient;
 import com.samvaad.tui.api.ConversationApiClient;
+import com.samvaad.tui.api.FriendRequestApiClient;
 import com.samvaad.tui.api.SamvaadApiException;
+import com.samvaad.tui.api.UserLookupApiClient;
 import com.samvaad.tui.api.dto.AuthResponse;
 import com.samvaad.tui.api.dto.ConversationResponse;
+import com.samvaad.tui.api.dto.FriendRequestResponse;
 import com.samvaad.tui.api.dto.MessageResponse;
+import com.samvaad.tui.api.dto.UserLookupResponse;
 import com.samvaad.tui.auth.Credentials;
 import com.samvaad.tui.cli.CliOptions;
 import com.samvaad.tui.config.AppConfig;
 import com.samvaad.tui.config.AppConfigResolver;
 import com.samvaad.tui.model.ConversationEntry;
 import com.samvaad.tui.model.ConversationStore;
+import com.samvaad.tui.model.FriendRequestEntry;
+import com.samvaad.tui.model.FriendRequestStore;
 import com.samvaad.tui.model.MessageEntry;
+import com.samvaad.tui.model.UserLookupEntry;
 import com.samvaad.tui.realtime.RealtimeClient;
 import com.samvaad.tui.realtime.RealtimeException;
 import com.samvaad.tui.realtime.RealtimeManager;
 import com.samvaad.tui.session.AuthSession;
 import com.samvaad.tui.session.SessionState;
+import com.samvaad.tui.ui.FriendService;
 import com.samvaad.tui.ui.MessageHistoryLoader;
 import com.samvaad.tui.ui.TuiException;
 import com.samvaad.tui.ui.TuiLauncher;
@@ -38,14 +46,19 @@ public final class AppBootstrap {
     private final ConsoleIO io;
     private final AuthApiClient authApi;
     private final ConversationApiClient conversationsApi;
+    private final UserLookupApiClient userLookupApi;
+    private final FriendRequestApiClient friendRequestApi;
     private final RealtimeClient realtimeClient;
     private final TuiLauncher tui;
 
     public AppBootstrap(ConsoleIO io, AuthApiClient authApi, ConversationApiClient conversationsApi,
+            UserLookupApiClient userLookupApi, FriendRequestApiClient friendRequestApi,
             RealtimeClient realtimeClient, TuiLauncher tui) {
         this.io = Objects.requireNonNull(io, "io");
         this.authApi = Objects.requireNonNull(authApi, "authApi");
         this.conversationsApi = Objects.requireNonNull(conversationsApi, "conversationsApi");
+        this.userLookupApi = Objects.requireNonNull(userLookupApi, "userLookupApi");
+        this.friendRequestApi = Objects.requireNonNull(friendRequestApi, "friendRequestApi");
         this.realtimeClient = Objects.requireNonNull(realtimeClient, "realtimeClient");
         this.tui = Objects.requireNonNull(tui, "tui");
     }
@@ -98,13 +111,16 @@ public final class AppBootstrap {
                 config.serverUrl(), auth.accessToken(), conversationId, afterSequence, limit);
         RealtimeManager realtime =
                 new RealtimeManager(realtimeClient, config.serverUrl(), auth.accessToken(), store, history);
+        FriendRequestStore friendStore = new FriendRequestStore();
+        FriendService friends = friendService(config.serverUrl(), auth.accessToken());
         try {
             realtime.connect();
         } catch (RealtimeException e) {
             System.err.println("Warning: realtime unavailable (" + e.getMessage() + "). History only.");
         }
         TuiSession tuiSession =
-                new TuiSession(config.username(), config.serverUrl(), store, history, realtime);
+                new TuiSession(config.username(), config.serverUrl(), store, history, realtime,
+                        friendStore, friends);
         int tuiExit = 0;
         try {
             tui.launch(tuiSession);
@@ -153,6 +169,63 @@ public final class AppBootstrap {
                     response.content(),
                     response.serverTimestamp(),
                     response.requestId()));
+        }
+        return entries;
+    }
+
+    /**
+     * Token-free user-lookup and friend-request operations for the UI.
+     * The access token stays inside these closures; UI code only sees
+     * model entries. Server list order is preserved exactly.
+     */
+    private FriendService friendService(String serverUrl, String accessToken) {
+        return new FriendService() {
+            @Override
+            public UserLookupEntry lookup(String username) {
+                UserLookupResponse response = userLookupApi.lookup(serverUrl, accessToken, username);
+                return UserLookupEntry.from(response);
+            }
+
+            @Override
+            public FriendRequestEntry sendRequest(String username) {
+                return FriendRequestEntry.from(
+                        friendRequestApi.sendRequest(serverUrl, accessToken, username));
+            }
+
+            @Override
+            public List<FriendRequestEntry> refreshIncoming() {
+                return toEntries(friendRequestApi.listIncoming(serverUrl, accessToken));
+            }
+
+            @Override
+            public List<FriendRequestEntry> refreshOutgoing() {
+                return toEntries(friendRequestApi.listOutgoing(serverUrl, accessToken));
+            }
+
+            @Override
+            public FriendRequestEntry accept(UUID requestId) {
+                return FriendRequestEntry.from(
+                        friendRequestApi.accept(serverUrl, accessToken, requestId));
+            }
+
+            @Override
+            public FriendRequestEntry reject(UUID requestId) {
+                return FriendRequestEntry.from(
+                        friendRequestApi.reject(serverUrl, accessToken, requestId));
+            }
+
+            @Override
+            public FriendRequestEntry cancel(UUID requestId) {
+                return FriendRequestEntry.from(
+                        friendRequestApi.cancel(serverUrl, accessToken, requestId));
+            }
+        };
+    }
+
+    private static List<FriendRequestEntry> toEntries(List<FriendRequestResponse> responses) {
+        List<FriendRequestEntry> entries = new ArrayList<>(responses.size());
+        for (FriendRequestResponse response : responses) {
+            entries.add(FriendRequestEntry.from(response));
         }
         return entries;
     }

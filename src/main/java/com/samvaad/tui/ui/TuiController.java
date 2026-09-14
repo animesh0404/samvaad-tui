@@ -8,21 +8,42 @@ import java.util.List;
 /**
  * Maps Lanterna key strokes onto {@link TuiState} transitions.
  *
- * <p>Bindings: Up/Down or k/j select, Tab moves focus, Enter opens the
- * highlighted conversation, Enter in the composer requests a send,
- * F1 or '?' toggles help, Esc closes help, any other key dismisses the
- * help overlay and is processed normally, F10 / Ctrl+C / 'q' in the list
- * quits. Typing otherwise edits the composer when it is focused.
+ * <p>Chat bindings (Phase 5, unchanged): Up/Down or k/j select, Tab
+ * moves focus, Enter opens the highlighted conversation, Enter in the
+ * composer requests a send, F1 or '?' toggles help, Esc closes help,
+ * any other key dismisses the help overlay and is processed normally,
+ * F10 / Ctrl+C / 'q' in the list quits. Typing otherwise edits the
+ * composer when it is focused.
+ *
+ * <p>Search/request bindings: '/' opens exact-username search, 'r'
+ * opens the pending friend-request lists (both from the conversation
+ * list). In SEARCH, typing edits the username, Enter looks it up, Tab
+ * moves to the send action and Enter sends the friend request, Esc
+ * returns to chat. In REQUESTS, Tab switches incoming/outgoing,
+ * Up/Down or k/j select, 'a' accepts, 'x' rejects, 'c' cancels,
+ * Enter runs the primary action (accept/cancel), 'g' refreshes, and
+ * Esc or 'q' returns to chat.
  */
 public final class TuiController {
 
     public enum Action {
         CONTINUE,
         QUIT,
-        SEND
+        SEND,
+        LOOKUP_USER,
+        SEND_FRIEND_REQUEST,
+        ACCEPT_REQUEST,
+        REJECT_REQUEST,
+        CANCEL_REQUEST,
+        REFRESH_REQUESTS
     }
 
     public Action handle(KeyStroke key, TuiState state, List<ConversationEntry> conversations) {
+        return handle(key, state, conversations, 0, 0);
+    }
+
+    public Action handle(KeyStroke key, TuiState state, List<ConversationEntry> conversations,
+            int incomingCount, int outgoingCount) {
         if (key == null) {
             return Action.CONTINUE;
         }
@@ -47,6 +68,12 @@ public final class TuiController {
         if (key.getKeyType() == KeyType.F1) {
             state.toggleHelp();
             return Action.CONTINUE;
+        }
+        if (state.view() == TuiState.View.SEARCH) {
+            return handleSearchKeys(key, state);
+        }
+        if (state.view() == TuiState.View.REQUESTS) {
+            return handleRequestKeys(key, state, incomingCount, outgoingCount);
         }
         if (key.getKeyType() == KeyType.Tab || key.getKeyType() == KeyType.ReverseTab) {
             state.toggleFocus();
@@ -75,6 +102,16 @@ public final class TuiController {
         if (isCharacter(key, '?')) {
             state.toggleHelp();
             return Action.CONTINUE;
+        }
+        if (isCharacter(key, '/')) {
+            state.enterSearch();
+            state.setStatus("Search user by exact username.");
+            return Action.CONTINUE;
+        }
+        if (isCharacter(key, 'r')) {
+            state.enterRequests();
+            state.setStatus("Friend requests.");
+            return Action.REFRESH_REQUESTS;
         }
         if (isCharacter(key, 'q')) {
             return Action.QUIT;
@@ -105,6 +142,86 @@ public final class TuiController {
                 state.appendToComposer(c);
             }
             return Action.CONTINUE;
+        }
+        return Action.CONTINUE;
+    }
+
+    private Action handleSearchKeys(KeyStroke key, TuiState state) {
+        if (key.getKeyType() == KeyType.Escape) {
+            state.exitToChat();
+            return Action.CONTINUE;
+        }
+        if (key.getKeyType() == KeyType.Tab || key.getKeyType() == KeyType.ReverseTab) {
+            state.toggleSearchFocus();
+            return Action.CONTINUE;
+        }
+        if (key.getKeyType() == KeyType.Enter) {
+            if (state.searchFocus() == TuiState.SearchFocus.SEND) {
+                return Action.SEND_FRIEND_REQUEST;
+            }
+            if (state.searchInput().isBlank()) {
+                state.setStatus("Type a username first.");
+                return Action.CONTINUE;
+            }
+            return Action.LOOKUP_USER;
+        }
+        if (key.getKeyType() == KeyType.Backspace) {
+            if (state.searchFocus() == TuiState.SearchFocus.SEND) {
+                state.focusSearchInput();
+                return Action.CONTINUE;
+            }
+            state.backspaceSearch();
+            return Action.CONTINUE;
+        }
+        if (key.getKeyType() == KeyType.Character && !key.isCtrlDown() && !key.isAltDown()) {
+            Character c = key.getCharacter();
+            if (c != null && !Character.isISOControl(c)) {
+                if (state.searchFocus() == TuiState.SearchFocus.SEND) {
+                    state.focusSearchInput();
+                }
+                state.appendToSearch(c);
+            }
+            return Action.CONTINUE;
+        }
+        return Action.CONTINUE;
+    }
+
+    private Action handleRequestKeys(KeyStroke key, TuiState state, int incomingCount, int outgoingCount) {
+        if (key.getKeyType() == KeyType.Escape || isCharacter(key, 'q')) {
+            state.exitToChat();
+            return Action.CONTINUE;
+        }
+        if (key.getKeyType() == KeyType.Tab || key.getKeyType() == KeyType.ReverseTab) {
+            state.toggleRequestSection();
+            return Action.CONTINUE;
+        }
+        int count = state.requestSection() == TuiState.RequestSection.INCOMING
+                ? incomingCount
+                : outgoingCount;
+        if (key.getKeyType() == KeyType.ArrowUp || isCharacter(key, 'k')) {
+            state.selectRequestUp(count);
+            return Action.CONTINUE;
+        }
+        if (key.getKeyType() == KeyType.ArrowDown || isCharacter(key, 'j')) {
+            state.selectRequestDown(count);
+            return Action.CONTINUE;
+        }
+        if (isCharacter(key, 'g')) {
+            return Action.REFRESH_REQUESTS;
+        }
+        if (isCharacter(key, 'a')) {
+            return Action.ACCEPT_REQUEST;
+        }
+        if (isCharacter(key, 'x')) {
+            return Action.REJECT_REQUEST;
+        }
+        if (isCharacter(key, 'c')) {
+            return Action.CANCEL_REQUEST;
+        }
+        if (key.getKeyType() == KeyType.Enter && count > 0) {
+            return state.requestSection() == TuiState.RequestSection.INCOMING
+                    ? Action.ACCEPT_REQUEST
+                    : Action.CANCEL_REQUEST;
         }
         return Action.CONTINUE;
     }

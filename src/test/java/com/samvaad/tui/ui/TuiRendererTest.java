@@ -240,7 +240,7 @@ class TuiRendererTest {
 
             String text = screenText(screen, 100, 30);
             assertTrue(!text.contains("Toggle"), "no stale help text may remain, got:\n" + text);
-            assertTrue(!text.contains("later phases"), "no stale help text may remain");
+            assertTrue(!text.contains("In requests"), "no stale help text may remain");
         } finally {
             screen.stopScreen();
         }
@@ -299,7 +299,7 @@ class TuiRendererTest {
 
             String text = screenText(screen, 70, 20);
             assertTrue(!text.contains("Toggle"), "no stale help text may remain after resize");
-            assertTrue(!text.contains("later phases"), "no stale help text may remain after resize");
+            assertTrue(!text.contains("In requests"), "no stale help text may remain after resize");
         } finally {
             screen.stopScreen();
         }

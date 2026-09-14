@@ -4,7 +4,8 @@ import java.util.UUID;
 
 /**
  * Mutable UI state for the TUI shell: selection, focus, composer buffer,
- * pending send, help overlay visibility, and the transient status line.
+ * pending send, help overlay visibility, the transient status line, and
+ * the user-search / friend-request workflows.
  */
 public final class TuiState {
 
@@ -13,7 +14,36 @@ public final class TuiState {
         COMPOSER
     }
 
+    /**
+     * Top-level terminal view. CHAT is the Phase 5 conversation shell;
+     * SEARCH hosts exact-username lookup; REQUESTS hosts the pending
+     * incoming/outgoing friend-request lists.
+     */
+    public enum View {
+        CHAT,
+        SEARCH,
+        REQUESTS
+    }
+
+    /**
+     * Mini-focus inside the SEARCH view: the username input or the
+     * send-request action for a successful lookup.
+     */
+    public enum SearchFocus {
+        INPUT,
+        SEND
+    }
+
+    /**
+     * Which pending list is active inside the REQUESTS view.
+     */
+    public enum RequestSection {
+        INCOMING,
+        OUTGOING
+    }
+
     static final int MAX_COMPOSER_LENGTH = 200;
+    static final int MAX_SEARCH_LENGTH = 32;
 
     private Focus focus = Focus.CONVERSATIONS;
     private int selectedIndex;
@@ -21,6 +51,11 @@ public final class TuiState {
     private UUID pendingSend;
     private boolean helpVisible;
     private String status = "";
+    private View view = View.CHAT;
+    private SearchFocus searchFocus = SearchFocus.INPUT;
+    private String searchInput = "";
+    private RequestSection requestSection = RequestSection.INCOMING;
+    private int requestSelectedIndex;
 
     public Focus focus() {
         return focus;
@@ -104,5 +139,91 @@ public final class TuiState {
 
     public void setStatus(String status) {
         this.status = status == null ? "" : status;
+    }
+
+    public View view() {
+        return view;
+    }
+
+    public void enterSearch() {
+        view = View.SEARCH;
+        searchFocus = SearchFocus.INPUT;
+    }
+
+    public void enterRequests() {
+        view = View.REQUESTS;
+        requestSelectedIndex = 0;
+    }
+
+    public void exitToChat() {
+        view = View.CHAT;
+    }
+
+    public SearchFocus searchFocus() {
+        return searchFocus;
+    }
+
+    public void toggleSearchFocus() {
+        searchFocus = searchFocus == SearchFocus.INPUT ? SearchFocus.SEND : SearchFocus.INPUT;
+    }
+
+    public void focusSearchInput() {
+        searchFocus = SearchFocus.INPUT;
+    }
+
+    public String searchInput() {
+        return searchInput;
+    }
+
+    public void appendToSearch(char c) {
+        if (searchInput.length() < MAX_SEARCH_LENGTH) {
+            searchInput += c;
+        }
+    }
+
+    public void backspaceSearch() {
+        if (!searchInput.isEmpty()) {
+            searchInput = searchInput.substring(0, searchInput.length() - 1);
+        }
+    }
+
+    public void clearSearch() {
+        searchInput = "";
+        searchFocus = SearchFocus.INPUT;
+    }
+
+    public RequestSection requestSection() {
+        return requestSection;
+    }
+
+    public void toggleRequestSection() {
+        requestSection = requestSection == RequestSection.INCOMING
+                ? RequestSection.OUTGOING
+                : RequestSection.INCOMING;
+        requestSelectedIndex = 0;
+    }
+
+    public int requestSelectedIndex() {
+        return requestSelectedIndex;
+    }
+
+    public void selectRequestUp(int count) {
+        if (count > 0) {
+            requestSelectedIndex = Math.max(0, requestSelectedIndex - 1);
+        }
+    }
+
+    public void selectRequestDown(int count) {
+        if (count > 0) {
+            requestSelectedIndex = Math.min(count - 1, requestSelectedIndex + 1);
+        }
+    }
+
+    public void clampRequestSelection(int count) {
+        if (count <= 0) {
+            requestSelectedIndex = 0;
+        } else {
+            requestSelectedIndex = Math.min(requestSelectedIndex, count - 1);
+        }
     }
 }
