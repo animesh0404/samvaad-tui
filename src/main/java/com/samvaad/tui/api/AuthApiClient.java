@@ -20,9 +20,13 @@ public final class AuthApiClient {
     static final String REFRESH_PATH = "/api/auth/refresh";
     static final String LOGOUT_PATH = "/api/auth/logout";
 
-    static final String CLIENT_PLATFORM = "TUI";
-    static final String CLIENT_NAME = "samvaad-tui";
-    static final String CLIENT_VERSION = "0.1.0";
+    /**
+     * Shared client identity sent at enrollment and login. Public so the
+     * E2EE device client reports the same identity without duplicating it.
+     */
+    public static final String CLIENT_PLATFORM = "TUI";
+    public static final String CLIENT_NAME = "samvaad-tui";
+    public static final String CLIENT_VERSION = "0.1.0";
 
     private final HttpTransport transport;
     private final ObjectMapper mapper;

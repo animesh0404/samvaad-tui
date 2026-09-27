@@ -9,6 +9,10 @@ public final class SamvaadApiException extends RuntimeException {
 
     public enum Kind {
         AUTHENTICATION_FAILED,
+        FORBIDDEN,
+        NOT_FOUND,
+        CONFLICT,
+        INVALID_REQUEST,
         SERVER_UNAVAILABLE,
         HTTP_ERROR,
         MALFORMED_RESPONSE

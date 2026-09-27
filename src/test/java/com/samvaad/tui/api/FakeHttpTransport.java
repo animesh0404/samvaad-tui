@@ -43,6 +43,15 @@ public final class FakeHttpTransport implements HttpTransport {
     }
 
     @Override
+    public HttpResult put(String baseUrl, String path, String jsonBody, String bearerToken) {
+        calls.add(new Call(baseUrl, path, jsonBody, bearerToken));
+        if (queued.isEmpty()) {
+            throw new IllegalStateException("No queued result for PUT " + path);
+        }
+        return queued.removeFirst();
+    }
+
+    @Override
     public HttpResult get(String baseUrl, String pathAndQuery, String bearerToken) {
         calls.add(new Call(baseUrl, pathAndQuery, null, bearerToken));
         if (queued.isEmpty()) {

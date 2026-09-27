@@ -5,7 +5,9 @@ import com.samvaad.e2ee.client.SamvaadCryptoService;
 import com.samvaad.e2ee.client.SignalAdapter;
 import com.samvaad.e2ee.client.signal.FilePrivateKeyVault;
 import com.samvaad.e2ee.client.signal.LibSignalAdapter;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -39,7 +41,20 @@ public final class E2eeRuntime implements AutoCloseable {
     private final byte[] kyberSignature;
     private final SamvaadCryptoService service;
     private final FilePrivateKeyVault vault;
+    private final LibSignalAdapter adapter;
+    private final ClientCryptoStore stores;
     private boolean closed;
+
+    /**
+     * One generated one-time prekey, public half only. The private half is
+     * sealed in the vault at generation time and never leaves this runtime.
+     */
+    public record OneTimePublicKey(int prekeyId, byte[] publicKey) {
+        public OneTimePublicKey {
+            Objects.requireNonNull(publicKey, "publicKey");
+            publicKey = Arrays.copyOf(publicKey, publicKey.length);
+        }
+    }
 
     E2eeRuntime(UUID deviceId,
             int registrationId,
@@ -49,7 +64,9 @@ public final class E2eeRuntime implements AutoCloseable {
             byte[] kyberPublicKey,
             byte[] kyberSignature,
             SamvaadCryptoService service,
-            FilePrivateKeyVault vault) {
+            FilePrivateKeyVault vault,
+            LibSignalAdapter adapter,
+            ClientCryptoStore stores) {
         this.deviceId = Objects.requireNonNull(deviceId, "deviceId");
         this.registrationId = registrationId;
         this.identityPublicKey = Arrays.copyOf(
@@ -65,6 +82,8 @@ public final class E2eeRuntime implements AutoCloseable {
                 kyberSignature.length);
         this.service = Objects.requireNonNull(service, "service");
         this.vault = Objects.requireNonNull(vault, "vault");
+        this.adapter = Objects.requireNonNull(adapter, "adapter");
+        this.stores = Objects.requireNonNull(stores, "stores");
     }
 
     /**
@@ -135,6 +154,65 @@ public final class E2eeRuntime implements AutoCloseable {
     public SamvaadCryptoService service() {
         ensureOpen();
         return service;
+    }
+
+    /**
+     * Signed-prekey id from the provisioned store.
+     */
+    public int signedPrekeyId() {
+        ensureOpen();
+        return stores.signedPrekey().prekeyId();
+    }
+
+    /**
+     * Signed-prekey public bytes (defensive copy). The private half stays
+     * sealed; only this public half is uploaded at enrollment.
+     */
+    public byte[] signedPrekeyPublicKey() {
+        ensureOpen();
+        byte[] publicKey = stores.signedPrekey().publicKey();
+        return Arrays.copyOf(publicKey, publicKey.length);
+    }
+
+    /**
+     * Identity signature over the signed prekey (defensive copy).
+     */
+    public byte[] signedPrekeySignature() {
+        ensureOpen();
+        byte[] signature = stores.signedPrekey().signature();
+        return Arrays.copyOf(signature, signature.length);
+    }
+
+    /**
+     * Generates {@code count} one-time prekeys starting at {@code startId},
+     * seals each private half in the vault (registered in the store), and
+     * returns the public halves for upload. Id allocation stays with the
+     * caller, which must persist its high-water mark; ids must never repeat
+     * for this device.
+     */
+    public List<OneTimePublicKey> generateOneTimePrekeys(int startId, int count) {
+        ensureOpen();
+        if (startId < 0 || count <= 0) {
+            throw new E2eeException("Invalid one-time prekey range.");
+        }
+        List<OneTimePublicKey> batch = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            int id = startId + i;
+            SignalAdapter.OneTimePrekeyPair pair = adapter.generateOneTimePrekey(id);
+            stores.putOneTimePrivate(id, pair.privateHandle());
+            batch.add(new OneTimePublicKey(id, pair.publicKey()));
+        }
+        return List.copyOf(batch);
+    }
+
+    /**
+     * Whether a sealed one-time private handle exists locally for
+     * {@code prekeyId}. Existence only — private bytes never cross this
+     * boundary. Package-visible for enrollment verification tests.
+     */
+    boolean hasOneTimePrivate(int prekeyId) {
+        ensureOpen();
+        return stores.oneTimePrivate(prekeyId).isPresent();
     }
 
     /**

@@ -261,6 +261,11 @@ class FriendRequestApiClientTest {
             }
 
             @Override
+            public HttpResult put(String baseUrl, String path, String jsonBody, String bearerToken) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
             public HttpResult get(String baseUrl, String pathAndQuery, String bearerToken) {
                 throw new SamvaadApiException(
                         SamvaadApiException.Kind.SERVER_UNAVAILABLE, -1, "down");

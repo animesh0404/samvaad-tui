@@ -66,5 +66,10 @@ class SamvaadTuiCommandTest {
         public HttpResult get(String baseUrl, String pathAndQuery, String bearerToken) {
             throw new UnsupportedOperationException("no HTTP in CLI parsing tests");
         }
+
+        @Override
+        public HttpResult put(String baseUrl, String path, String jsonBody, String bearerToken) {
+            throw new UnsupportedOperationException("no HTTP in CLI parsing tests");
+        }
     }
 }

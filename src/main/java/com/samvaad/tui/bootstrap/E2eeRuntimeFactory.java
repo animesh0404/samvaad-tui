@@ -153,7 +153,7 @@ public final class E2eeRuntimeFactory {
                     adapter, stores, new OfflineTransport(), new OfflineTransport());
             return new E2eeRuntime(current.deviceId, current.registrationId, identityPublicKey,
                     fingerprint, current.kyberPrekeyId, current.kyberPublicKey(),
-                    current.kyberSignature(), service, vault);
+                    current.kyberSignature(), service, vault, adapter, stores);
         } catch (RuntimeException e) {
             vault.close();
             throw e;
@@ -261,6 +261,52 @@ public final class E2eeRuntimeFactory {
     }
 
     /**
+     * Persists the authoritative server binding for the device in
+     * {@code e2eeDir} without touching identity material: the
+     * server-assigned device id, the server-assigned Signal integer, the
+     * last-known server status, and the OTPK high-water mark. Never stores
+     * recovery codes.
+     */
+    public static void persistServerBinding(Path e2eeDir, UUID serverDeviceId, int signalDeviceId,
+            E2eeEnrollmentState status, int otpkHighWaterMark) {
+        Objects.requireNonNull(e2eeDir, "e2eeDir");
+        Objects.requireNonNull(serverDeviceId, "serverDeviceId");
+        Objects.requireNonNull(status, "status");
+        if (signalDeviceId < 1 || otpkHighWaterMark < 0) {
+            throw new E2eeException("Invalid server binding.");
+        }
+        Path metadataFile = e2eeDir.resolve(METADATA_FILE);
+        DeviceMetadata metadata = readMetadata(metadataFile);
+        if (metadata == null) {
+            throw new E2eeException("No local E2EE device to bind a server record to.");
+        }
+        writeMetadata(metadataFile,
+                metadata.withServerBinding(serverDeviceId, signalDeviceId, status, otpkHighWaterMark));
+    }
+
+    /**
+     * Loads the persisted server binding, or null when this device was
+     * never enrolled. Package-visible for enrollment reconciliation.
+     */
+    static ServerBinding loadServerBinding(Path e2eeDir) {
+        Objects.requireNonNull(e2eeDir, "e2eeDir");
+        DeviceMetadata metadata = readMetadata(e2eeDir.resolve(METADATA_FILE));
+        if (metadata == null || metadata.serverDeviceIdOrNull == null) {
+            return null;
+        }
+        return new ServerBinding(metadata.serverDeviceIdOrNull, metadata.signalDeviceIdOrNull,
+                metadata.enrollmentStatusOrNull, metadata.otpkHighWaterMark);
+    }
+
+    /**
+     * Last-known authoritative server record for the local device. The
+     * server remains authoritative; this is a cache reconciled on every
+     * enrollment attempt.
+     */
+    record ServerBinding(UUID serverDeviceId, int signalDeviceId, E2eeEnrollmentState status,
+            int otpkHighWaterMark) {
+    }
+    /**
      * Offline transport: fails closed until a later slice enrolls the device
      * and provides real claim/submit clients. Unchecked, so the declared
      * library signatures need no adaptation.
@@ -294,21 +340,31 @@ public final class E2eeRuntimeFactory {
         final int kyberPrekeyId;
         final byte[] kyberPublicKeyOrNull;
         final byte[] kyberSignatureOrNull;
+        final UUID serverDeviceIdOrNull;
+        final int signalDeviceIdOrNull;
+        final E2eeEnrollmentState enrollmentStatusOrNull;
+        final int otpkHighWaterMark;
 
         private DeviceMetadata(UUID deviceId, int registrationId, int signedPrekeyId,
-                int kyberPrekeyId, byte[] kyberPublicKeyOrNull, byte[] kyberSignatureOrNull) {
+                int kyberPrekeyId, byte[] kyberPublicKeyOrNull, byte[] kyberSignatureOrNull,
+                UUID serverDeviceIdOrNull, int signalDeviceIdOrNull,
+                E2eeEnrollmentState enrollmentStatusOrNull, int otpkHighWaterMark) {
             this.deviceId = deviceId;
             this.registrationId = registrationId;
             this.signedPrekeyId = signedPrekeyId;
             this.kyberPrekeyId = kyberPrekeyId;
             this.kyberPublicKeyOrNull = kyberPublicKeyOrNull;
             this.kyberSignatureOrNull = kyberSignatureOrNull;
+            this.serverDeviceIdOrNull = serverDeviceIdOrNull;
+            this.signalDeviceIdOrNull = signalDeviceIdOrNull;
+            this.enrollmentStatusOrNull = enrollmentStatusOrNull;
+            this.otpkHighWaterMark = otpkHighWaterMark;
         }
 
         static DeviceMetadata fresh() {
             return new DeviceMetadata(UUID.randomUUID(),
                     ThreadLocalRandom.current().nextInt(1, Integer.MAX_VALUE),
-                    SIGNED_PREKEY_ID, KYBER_PREKEY_ID, null, null);
+                    SIGNED_PREKEY_ID, KYBER_PREKEY_ID, null, null, null, 0, null, 0);
         }
 
         static DeviceMetadata parse(Properties props) {
@@ -340,8 +396,34 @@ public final class E2eeRuntimeFactory {
                     throw new IllegalArgumentException("empty Kyber triple in device metadata");
                 }
             }
+            String serverDeviceText = props.getProperty("serverDeviceId");
+            String signalDeviceText = props.getProperty("signalDeviceId");
+            String statusText = props.getProperty("enrollmentStatus");
+            String otpkMarkText = props.getProperty("otpkHighWaterMark");
+            UUID serverDeviceId = null;
+            int signalDeviceId = 0;
+            E2eeEnrollmentState status = null;
+            int otpkMark = 0;
+            if (serverDeviceText != null || signalDeviceText != null
+                    || statusText != null || otpkMarkText != null) {
+                if (serverDeviceText == null || signalDeviceText == null
+                        || statusText == null || otpkMarkText == null) {
+                    throw new IllegalArgumentException("partial server binding in device metadata");
+                }
+                serverDeviceId = UUID.fromString(serverDeviceText.trim());
+                signalDeviceId = Integer.parseInt(signalDeviceText.trim());
+                try {
+                    status = E2eeEnrollmentState.valueOf(statusText.trim());
+                } catch (IllegalArgumentException e) {
+                    throw new IllegalArgumentException("unknown enrollment status in device metadata", e);
+                }
+                otpkMark = Integer.parseInt(otpkMarkText.trim());
+                if (signalDeviceId < 1 || otpkMark < 0) {
+                    throw new IllegalArgumentException("server binding out of range");
+                }
+            }
             return new DeviceMetadata(deviceId, registrationId, signedPrekeyId, kyberPrekeyId,
-                    kyberPublicKey, kyberSignature);
+                    kyberPublicKey, kyberSignature, serverDeviceId, signalDeviceId, status, otpkMark);
         }
 
         boolean hasKyberTriple() {
@@ -365,7 +447,16 @@ public final class E2eeRuntimeFactory {
         DeviceMetadata withKyberTriple(byte[] publicKey, byte[] signature) {
             return new DeviceMetadata(deviceId, registrationId, signedPrekeyId, kyberPrekeyId,
                     Arrays.copyOf(publicKey, publicKey.length),
-                    Arrays.copyOf(signature, signature.length));
+                    Arrays.copyOf(signature, signature.length),
+                    serverDeviceIdOrNull, signalDeviceIdOrNull, enrollmentStatusOrNull,
+                    otpkHighWaterMark);
+        }
+
+        DeviceMetadata withServerBinding(UUID serverDeviceId, int signalDeviceId,
+                E2eeEnrollmentState status, int mark) {
+            return new DeviceMetadata(deviceId, registrationId, signedPrekeyId, kyberPrekeyId,
+                    kyberPublicKeyOrNull, kyberSignatureOrNull, serverDeviceId, signalDeviceId,
+                    status, mark);
         }
 
         Properties render() {
@@ -379,6 +470,12 @@ public final class E2eeRuntimeFactory {
                         Base64.getEncoder().encodeToString(kyberPublicKeyOrNull));
                 props.setProperty("kyberSignature",
                         Base64.getEncoder().encodeToString(kyberSignatureOrNull));
+            }
+            if (serverDeviceIdOrNull != null) {
+                props.setProperty("serverDeviceId", serverDeviceIdOrNull.toString());
+                props.setProperty("signalDeviceId", Integer.toString(signalDeviceIdOrNull));
+                props.setProperty("enrollmentStatus", enrollmentStatusOrNull.name());
+                props.setProperty("otpkHighWaterMark", Integer.toString(otpkHighWaterMark));
             }
             return props;
         }

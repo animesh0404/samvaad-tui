@@ -20,6 +20,18 @@ public interface HttpTransport {
     HttpResult post(String baseUrl, String path, String jsonBody, String bearerToken);
 
     /**
+     * Sends a PUT request.
+     *
+     * @param baseUrl normalized server base URL without trailing slash
+     * @param path request path, e.g. {@code /api/e2ee/devices/{id}/one-time-prekeys}
+     * @param jsonBody JSON body, or null for a bodyless PUT
+     * @param bearerToken access token for the Authorization header, or null
+     * @return the response status and body
+     * @throws SamvaadApiException on transport failure
+     */
+    HttpResult put(String baseUrl, String path, String jsonBody, String bearerToken);
+
+    /**
      * Sends a GET request.
      *
      * @param baseUrl normalized server base URL without trailing slash
