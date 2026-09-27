@@ -48,7 +48,7 @@ class AppBootstrapTest {
         return new AppBootstrap(io, new AuthApiClient(transport),
                 new ConversationApiClient(transport), new UserLookupApiClient(transport),
                 new FriendRequestApiClient(transport), new FriendsApiClient(transport),
-                (serverUrl, accessToken) -> null,
+                (serverUrl, auth) -> null,
                 realtime, tui);
     }
 
@@ -226,6 +226,24 @@ class AppBootstrapTest {
 
         assertEquals(1, exit);
         assertEquals(3, transport.calls().size(), "logout must still revoke the server session");
+        assertEquals("/api/auth/logout", transport.calls().get(2).path());
+    }
+
+    @Test
+    void explicitLogoutSkipsShutdownLogout() {
+        FakeConsoleIO io = new FakeConsoleIO();
+        io.setPassword("s3cret".toCharArray());
+        FakeHttpTransport transport = new FakeHttpTransport();
+        queueLoginListLogout(transport);
+
+        int exit = bootstrap(io, transport, new FakeRealtimeClient(), (session) -> {
+            session.logout().logout();
+        }).run(new CliOptions("http://localhost:8080", "alice"));
+
+        assertEquals(0, exit);
+        assertEquals(3, transport.calls().size(),
+                "a successful explicit logout must replace, not precede, the shutdown logout");
+        assertEquals("/api/auth/login", transport.calls().get(0).path());
         assertEquals("/api/auth/logout", transport.calls().get(2).path());
     }
 

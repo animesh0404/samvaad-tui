@@ -9,7 +9,9 @@ import com.samvaad.tui.api.E2eeDeviceApiClient;
 import com.samvaad.tui.api.E2eeDeviceApiClientTest;
 import com.samvaad.tui.api.E2eeMessageApiClient;
 import com.samvaad.tui.api.FakeHttpTransport;
+import com.samvaad.tui.session.AuthSession;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -26,7 +28,7 @@ class E2eeStartupInitializerTest {
         E2eeInitializer initializer = new E2eeStartupInitializer(new FakeConsoleIO(),
                 new E2eeDeviceApiClient(transport), new E2eeMessageApiClient(transport), dir);
 
-        assertNull(initializer.initialize("http://localhost:8080", "token"));
+        assertNull(initializer.initialize("http://localhost:8080", testAuth()));
         assertTrue(transport.calls().isEmpty());
     }
 
@@ -55,7 +57,7 @@ class E2eeStartupInitializerTest {
         E2eeInitializer initializer = new E2eeStartupInitializer(io,
                 new E2eeDeviceApiClient(transport), new E2eeMessageApiClient(transport), dir);
 
-        E2eeMessageSender sender = initializer.initialize("http://localhost:8080", "token");
+        E2eeMessageSender sender = initializer.initialize("http://localhost:8080", testAuth());
 
         assertNotNull(sender);
         E2eeSendException e = assertThrows(E2eeSendException.class,
@@ -65,5 +67,11 @@ class E2eeStartupInitializerTest {
 
     private static String base64(byte[] bytes) {
         return java.util.Base64.getEncoder().encodeToString(bytes);
+    }
+
+    private static AuthSession testAuth() {
+        return new AuthSession("token", "refresh",
+                "99999999-9999-9999-9999-999999999999", 3600, Instant.now(),
+                java.util.UUID.randomUUID());
     }
 }

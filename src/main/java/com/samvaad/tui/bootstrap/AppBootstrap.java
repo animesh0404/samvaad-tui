@@ -32,6 +32,7 @@ import com.samvaad.tui.session.AuthSession;
 import com.samvaad.tui.session.SessionState;
 import com.samvaad.tui.ui.ConversationListLoader;
 import com.samvaad.tui.ui.FriendService;
+import com.samvaad.tui.ui.LogoutService;
 import com.samvaad.tui.ui.MessageHistoryLoader;
 import com.samvaad.tui.ui.TuiException;
 import com.samvaad.tui.ui.TuiLauncher;
@@ -41,6 +42,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Phase 4 startup flow: resolve config, log in, load the server
@@ -108,7 +110,7 @@ public final class AppBootstrap {
         System.out.println("Session: " + auth.sessionId());
         System.out.println("Authenticated: yes (expires in " + auth.expiresInSeconds() + " seconds)");
 
-        E2eeMessageSender e2eeSender = e2ee.initialize(config.serverUrl(), auth.accessToken());
+        E2eeMessageSender e2eeSender = e2ee.initialize(config.serverUrl(), auth);
 
         List<ConversationEntry> entries;
         try {
@@ -134,9 +136,14 @@ public final class AppBootstrap {
         } catch (RealtimeException e) {
             System.err.println("Warning: realtime unavailable (" + e.getMessage() + "). History only.");
         }
+        // Set by the explicit UI logout seam on success; the shutdown
+        // auto-logout below runs only when no explicit logout succeeded,
+        // so a revoked token is never submitted twice.
+        AtomicBoolean explicitLogout = new AtomicBoolean(false);
         TuiSession tuiSession =
                 new TuiSession(config.username(), config.serverUrl(), store, history, realtime,
-                        friendStore, friends, friendList, conversationLoader, e2eeSender);
+                        friendStore, friends, friendList, conversationLoader, e2eeSender,
+                        logoutService(config.serverUrl(), auth.accessToken(), explicitLogout));
         int tuiExit = 0;
         try {
             tui.launch(tuiSession);
@@ -147,8 +154,10 @@ public final class AppBootstrap {
             realtime.disconnect();
         }
         try {
-            authApi.logout(config.serverUrl(), auth.accessToken());
-            System.out.println("Logged out. Server session revoked.");
+            if (!explicitLogout.get()) {
+                authApi.logout(config.serverUrl(), auth.accessToken());
+                System.out.println("Logged out. Server session revoked.");
+            }
         } catch (SamvaadApiException e) {
             System.err.println("Warning: logout failed (" + e.getMessage() + "). Local session cleared.");
         } finally {
@@ -252,6 +261,21 @@ public final class AppBootstrap {
                 return FirstMessage.from(conversationsApi.sendFirstMessage(
                         serverUrl, accessToken, username, content, requestId));
             }
+        };
+    }
+
+    /**
+     * Explicit user-logout seam for the UI, following the same pattern as
+     * {@link #friendService}: the access token stays inside this closure;
+     * UI code only triggers revocation. Failures propagate as
+     * {@link SamvaadApiException}, per the seam contract. On success the
+     * flag is set so the shutdown auto-logout below is skipped.
+     */
+    private LogoutService logoutService(String serverUrl, String accessToken,
+            AtomicBoolean explicitLogout) {
+        return () -> {
+            authApi.logout(serverUrl, accessToken);
+            explicitLogout.set(true);
         };
     }
 

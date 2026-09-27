@@ -1,5 +1,7 @@
 package com.samvaad.tui.bootstrap;
 
+import com.samvaad.tui.session.AuthSession;
+
 /**
  * Best-effort E2EE sender setup performed once after login. Implementations
  * must never break the plaintext flow: any failure degrades to
@@ -12,8 +14,9 @@ public interface E2eeInitializer {
      * the current session.
      *
      * @param serverUrl normalized server base URL
-     * @param accessToken current access token, borrowed for these calls only
+     * @param auth current session (access token borrowed, session id used
+     *             for binding checks; neither is persisted here)
      * @return a ready sender, a disabled sender with the reason, or null
      */
-    E2eeMessageSender initialize(String serverUrl, String accessToken);
+    E2eeMessageSender initialize(String serverUrl, AuthSession auth);
 }

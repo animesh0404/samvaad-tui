@@ -2,8 +2,10 @@ package com.samvaad.tui.bootstrap;
 
 import com.samvaad.tui.api.E2eeDeviceApiClient;
 import com.samvaad.tui.api.E2eeMessageApiClient;
+import com.samvaad.tui.session.AuthSession;
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * Production {@link E2eeInitializer}: opens the local device (prompting
@@ -28,7 +30,7 @@ public final class E2eeStartupInitializer implements E2eeInitializer {
     }
 
     @Override
-    public E2eeMessageSender initialize(String serverUrl, String accessToken) {
+    public E2eeMessageSender initialize(String serverUrl, AuthSession auth) {
         E2eeRuntime runtime;
         try {
             runtime = E2eeRuntimeFactory.initializeInteractive(e2eeDir, io);
@@ -39,7 +41,8 @@ public final class E2eeStartupInitializer implements E2eeInitializer {
         E2eeEnrollmentService.EnrolledDevice enrolled;
         try {
             enrolled = new E2eeEnrollmentService(devices)
-                    .enroll(serverUrl, accessToken, runtime, e2eeDir);
+                    .enroll(serverUrl, auth.accessToken(), UUID.fromString(auth.sessionId()),
+                            runtime, e2eeDir);
         } catch (RuntimeException e) {
             System.out.println("Warning: E2EE enrollment unavailable ("
                     + safeMessage(e) + "). Plaintext only.");
@@ -56,7 +59,7 @@ public final class E2eeStartupInitializer implements E2eeInitializer {
             System.out.println(
                     "E2EE ready (device " + enrolled.serverDeviceId() + "). Ctrl+E sends encrypted.");
             return E2eeMessageSender.ready(
-                    devices, messages, serverUrl, accessToken, runtime, enrolled.serverDeviceId());
+                    devices, messages, serverUrl, auth.accessToken(), runtime, enrolled.serverDeviceId());
         }
         String reason = enrolled.state() == E2eeEnrollmentState.PENDING_APPROVAL
                 ? "device pending approval by another device"

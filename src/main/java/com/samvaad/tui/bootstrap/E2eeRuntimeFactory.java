@@ -285,6 +285,23 @@ public final class E2eeRuntimeFactory {
     }
 
     /**
+     * Records which server session the local device is bound to. Written
+     * only on fresh enrollment (the server binds the enrolling session at
+     * device creation); never changed by adoption, so a restart that
+     * restores the same session can prove the binding is still live.
+     */
+    public static void noteSessionBinding(Path e2eeDir, UUID sessionId) {
+        Objects.requireNonNull(e2eeDir, "e2eeDir");
+        Objects.requireNonNull(sessionId, "sessionId");
+        Path metadataFile = e2eeDir.resolve(METADATA_FILE);
+        DeviceMetadata metadata = readMetadata(metadataFile);
+        if (metadata == null) {
+            throw new E2eeException("No local E2EE device to bind a session to.");
+        }
+        writeMetadata(metadataFile, metadata.withBoundSession(sessionId));
+    }
+
+    /**
      * Loads the persisted server binding, or null when this device was
      * never enrolled. Package-visible for enrollment reconciliation.
      */
@@ -295,7 +312,8 @@ public final class E2eeRuntimeFactory {
             return null;
         }
         return new ServerBinding(metadata.serverDeviceIdOrNull, metadata.signalDeviceIdOrNull,
-                metadata.enrollmentStatusOrNull, metadata.otpkHighWaterMark);
+                metadata.enrollmentStatusOrNull, metadata.otpkHighWaterMark,
+                metadata.boundSessionIdOrNull);
     }
 
     /**
@@ -304,7 +322,7 @@ public final class E2eeRuntimeFactory {
      * enrollment attempt.
      */
     record ServerBinding(UUID serverDeviceId, int signalDeviceId, E2eeEnrollmentState status,
-            int otpkHighWaterMark) {
+            int otpkHighWaterMark, UUID boundSessionIdOrNull) {
     }
     /**
      * Offline transport: fails closed until a later slice enrolls the device
@@ -344,11 +362,13 @@ public final class E2eeRuntimeFactory {
         final int signalDeviceIdOrNull;
         final E2eeEnrollmentState enrollmentStatusOrNull;
         final int otpkHighWaterMark;
+        final UUID boundSessionIdOrNull;
 
         private DeviceMetadata(UUID deviceId, int registrationId, int signedPrekeyId,
                 int kyberPrekeyId, byte[] kyberPublicKeyOrNull, byte[] kyberSignatureOrNull,
                 UUID serverDeviceIdOrNull, int signalDeviceIdOrNull,
-                E2eeEnrollmentState enrollmentStatusOrNull, int otpkHighWaterMark) {
+                E2eeEnrollmentState enrollmentStatusOrNull, int otpkHighWaterMark,
+                UUID boundSessionIdOrNull) {
             this.deviceId = deviceId;
             this.registrationId = registrationId;
             this.signedPrekeyId = signedPrekeyId;
@@ -359,12 +379,13 @@ public final class E2eeRuntimeFactory {
             this.signalDeviceIdOrNull = signalDeviceIdOrNull;
             this.enrollmentStatusOrNull = enrollmentStatusOrNull;
             this.otpkHighWaterMark = otpkHighWaterMark;
+            this.boundSessionIdOrNull = boundSessionIdOrNull;
         }
 
         static DeviceMetadata fresh() {
             return new DeviceMetadata(UUID.randomUUID(),
                     ThreadLocalRandom.current().nextInt(1, Integer.MAX_VALUE),
-                    SIGNED_PREKEY_ID, KYBER_PREKEY_ID, null, null, null, 0, null, 0);
+                    SIGNED_PREKEY_ID, KYBER_PREKEY_ID, null, null, null, 0, null, 0, null);
         }
 
         static DeviceMetadata parse(Properties props) {
@@ -404,6 +425,7 @@ public final class E2eeRuntimeFactory {
             int signalDeviceId = 0;
             E2eeEnrollmentState status = null;
             int otpkMark = 0;
+            UUID boundSessionId = null;
             if (serverDeviceText != null || signalDeviceText != null
                     || statusText != null || otpkMarkText != null) {
                 if (serverDeviceText == null || signalDeviceText == null
@@ -422,8 +444,17 @@ public final class E2eeRuntimeFactory {
                     throw new IllegalArgumentException("server binding out of range");
                 }
             }
+            String boundSessionText = props.getProperty("boundSessionId");
+            if (boundSessionText != null) {
+                try {
+                    boundSessionId = UUID.fromString(boundSessionText.trim());
+                } catch (IllegalArgumentException e) {
+                    throw new IllegalArgumentException("invalid bound session in device metadata", e);
+                }
+            }
             return new DeviceMetadata(deviceId, registrationId, signedPrekeyId, kyberPrekeyId,
-                    kyberPublicKey, kyberSignature, serverDeviceId, signalDeviceId, status, otpkMark);
+                    kyberPublicKey, kyberSignature, serverDeviceId, signalDeviceId, status, otpkMark,
+                    boundSessionId);
         }
 
         boolean hasKyberTriple() {
@@ -449,14 +480,20 @@ public final class E2eeRuntimeFactory {
                     Arrays.copyOf(publicKey, publicKey.length),
                     Arrays.copyOf(signature, signature.length),
                     serverDeviceIdOrNull, signalDeviceIdOrNull, enrollmentStatusOrNull,
-                    otpkHighWaterMark);
+                    otpkHighWaterMark, boundSessionIdOrNull);
         }
 
         DeviceMetadata withServerBinding(UUID serverDeviceId, int signalDeviceId,
                 E2eeEnrollmentState status, int mark) {
             return new DeviceMetadata(deviceId, registrationId, signedPrekeyId, kyberPrekeyId,
                     kyberPublicKeyOrNull, kyberSignatureOrNull, serverDeviceId, signalDeviceId,
-                    status, mark);
+                    status, mark, boundSessionIdOrNull);
+        }
+
+        DeviceMetadata withBoundSession(UUID sessionId) {
+            return new DeviceMetadata(deviceId, registrationId, signedPrekeyId, kyberPrekeyId,
+                    kyberPublicKeyOrNull, kyberSignatureOrNull, serverDeviceIdOrNull,
+                    signalDeviceIdOrNull, enrollmentStatusOrNull, otpkHighWaterMark, sessionId);
         }
 
         Properties render() {
@@ -476,6 +513,9 @@ public final class E2eeRuntimeFactory {
                 props.setProperty("signalDeviceId", Integer.toString(signalDeviceIdOrNull));
                 props.setProperty("enrollmentStatus", enrollmentStatusOrNull.name());
                 props.setProperty("otpkHighWaterMark", Integer.toString(otpkHighWaterMark));
+            }
+            if (boundSessionIdOrNull != null) {
+                props.setProperty("boundSessionId", boundSessionIdOrNull.toString());
             }
             return props;
         }

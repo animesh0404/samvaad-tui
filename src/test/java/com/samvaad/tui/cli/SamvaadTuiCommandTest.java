@@ -27,7 +27,7 @@ class SamvaadTuiCommandTest {
                         new UserLookupApiClient(new UnusedTransport()),
                         new FriendRequestApiClient(new UnusedTransport()),
                         new FriendsApiClient(new UnusedTransport()),
-                        (serverUrl, accessToken) -> null, new FakeRealtimeClient(),
+                        (serverUrl, auth) -> null, new FakeRealtimeClient(),
                         (session) -> { }));
         new CommandLine(command).parseArgs(args);
         return command;

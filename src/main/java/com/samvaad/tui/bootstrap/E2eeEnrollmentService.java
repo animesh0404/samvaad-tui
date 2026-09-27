@@ -81,12 +81,16 @@ public final class E2eeEnrollmentService {
      *
      * @param serverUrl normalized server base URL
      * @param accessToken current access token, borrowed for these calls only
+     * @param sessionId current server session id, recorded as the bound
+     *                  session on fresh enrollment and compared on adoption
      * @param runtime opened local E2EE runtime (identity is never regenerated here)
      * @param e2eeDir TUI E2EE state directory holding {@code device.properties}
      */
-    public EnrolledDevice enroll(String serverUrl, String accessToken, E2eeRuntime runtime, Path e2eeDir) {
+    public EnrolledDevice enroll(String serverUrl, String accessToken, UUID sessionId,
+            E2eeRuntime runtime, Path e2eeDir) {
         Objects.requireNonNull(serverUrl, "serverUrl");
         Objects.requireNonNull(accessToken, "accessToken");
+        Objects.requireNonNull(sessionId, "sessionId");
         Objects.requireNonNull(runtime, "runtime");
         Objects.requireNonNull(e2eeDir, "e2eeDir");
 
@@ -96,7 +100,7 @@ public final class E2eeEnrollmentService {
             E2eeDeviceResponse known =
                     findByIdentity(listDevices(serverUrl, accessToken), localIdentity, localRegistrationId);
             if (known != null) {
-                return adopt(serverUrl, accessToken, runtime, e2eeDir, known);
+                return adopt(serverUrl, accessToken, sessionId, runtime, e2eeDir, known);
             }
             EnrollDeviceResponse enrolled;
             try {
@@ -111,8 +115,9 @@ public final class E2eeEnrollmentService {
                 if (conflicted == null) {
                     throw e;
                 }
-                return adopt(serverUrl, accessToken, runtime, e2eeDir, conflicted);
+                return adopt(serverUrl, accessToken, sessionId, runtime, e2eeDir, conflicted);
             }
+            E2eeRuntimeFactory.noteSessionBinding(e2eeDir, sessionId);
             E2eeDeviceResponse device = enrolled.device();
             E2eeEnrollmentState state = toLocalState(device.status());
             if (state == E2eeEnrollmentState.ACTIVE) {
@@ -129,22 +134,33 @@ public final class E2eeEnrollmentService {
         }
     }
 
-    private EnrolledDevice adopt(String serverUrl, String accessToken, E2eeRuntime runtime,
-            Path e2eeDir, E2eeDeviceResponse known) {
+    private EnrolledDevice adopt(String serverUrl, String accessToken, UUID sessionId,
+            E2eeRuntime runtime, Path e2eeDir, E2eeDeviceResponse known) {
         E2eeEnrollmentState state = toLocalState(known.status());
         if (state == E2eeEnrollmentState.REVOKED) {
             throw new E2eeException("Local E2EE device is revoked on the server.");
         }
+        boolean bound = isBoundTo(e2eeDir, sessionId);
         if (state == E2eeEnrollmentState.ACTIVE && known.availablePrekeys() == 0) {
             long available = uploadInitialPrekeys(serverUrl, accessToken, runtime, e2eeDir, known);
             persistBinding(e2eeDir, known, state, PrekeyManager.BATCH_SIZE);
             return new EnrolledDevice(known.deviceId(), known.signalDeviceId(), state, null,
-                    available, false);
+                    available, bound);
         }
         int mark = state == E2eeEnrollmentState.ACTIVE ? PrekeyManager.BATCH_SIZE : 0;
         persistBinding(e2eeDir, known, state, mark);
         return new EnrolledDevice(known.deviceId(), known.signalDeviceId(), state, null,
-                known.availablePrekeys(), false);
+                known.availablePrekeys(), bound);
+    }
+
+    /**
+     * Whether the locally recorded bound session matches the current one.
+     * True after a restart that restored the same server session; false
+     * after a fresh login created a new session.
+     */
+    private static boolean isBoundTo(Path e2eeDir, UUID sessionId) {
+        E2eeRuntimeFactory.ServerBinding binding = E2eeRuntimeFactory.loadServerBinding(e2eeDir);
+        return binding != null && sessionId.equals(binding.boundSessionIdOrNull());
     }
 
     private EnrollDeviceResponse enrollNew(String serverUrl, String accessToken, E2eeRuntime runtime) {

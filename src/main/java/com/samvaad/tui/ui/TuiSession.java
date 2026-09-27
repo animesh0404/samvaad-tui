@@ -16,6 +16,12 @@ import com.samvaad.tui.realtime.RealtimeManager;
  * <p>The optional E2EE sender (null when E2EE was unavailable this
  * session) offers encrypted direct messaging alongside — never instead
  * of — the plaintext realtime path.
+ *
+ * <p>The optional logout service (null in flows without authentication,
+ * e.g. some tests) revokes the server session on explicit user request.
+ * A successful explicit logout suppresses the shutdown auto-logout, so
+ * the revoked token is never submitted twice; exits without a successful
+ * explicit logout still revoke via the bootstrap's automatic logout.
  */
 public record TuiSession(
         String username,
@@ -27,5 +33,6 @@ public record TuiSession(
         FriendService friends,
         FriendStore friendList,
         ConversationListLoader conversationLoader,
-        E2eeMessageSender e2eeSender) {
+        E2eeMessageSender e2eeSender,
+        LogoutService logout) {
 }

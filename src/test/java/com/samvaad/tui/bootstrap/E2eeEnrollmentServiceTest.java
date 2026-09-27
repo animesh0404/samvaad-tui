@@ -39,6 +39,7 @@ class E2eeEnrollmentServiceTest {
 
     private static final String BASE_URL = "http://localhost:8080";
     private static final String TOKEN = "token";
+    private static final UUID SESSION_ID = UUID.fromString("99999999-9999-9999-9999-999999999999");
 
     private static char[] vaultPassword() {
         return "test-only-vault-password".toCharArray();
@@ -59,7 +60,7 @@ class E2eeEnrollmentServiceTest {
         byte[] identityBeforeClose;
         try {
             identityBeforeClose = runtime.identityPublicKey();
-            result = enrollment.enroll(BASE_URL, TOKEN, runtime, dir);
+            result = enrollment.enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir);
         } finally {
             runtime.close();
         }
@@ -118,7 +119,7 @@ class E2eeEnrollmentServiceTest {
 
         E2eeEnrollmentService.EnrolledDevice result;
         try {
-            result = enrollment.enroll(BASE_URL, TOKEN, runtime, dir);
+            result = enrollment.enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir);
         } finally {
             runtime.close();
         }
@@ -140,7 +141,7 @@ class E2eeEnrollmentServiceTest {
 
         E2eeEnrollmentService.EnrolledDevice result;
         try {
-            result = enrollment.enroll(BASE_URL, TOKEN, runtime, dir);
+            result = enrollment.enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir);
         } finally {
             runtime.close();
         }
@@ -164,7 +165,7 @@ class E2eeEnrollmentServiceTest {
 
         E2eeEnrollmentService.EnrolledDevice result;
         try {
-            result = enrollment.enroll(BASE_URL, TOKEN, runtime, dir);
+            result = enrollment.enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir);
         } finally {
             runtime.close();
         }
@@ -188,7 +189,7 @@ class E2eeEnrollmentServiceTest {
 
         E2eeEnrollmentService.EnrolledDevice result;
         try {
-            result = enrollment.enroll(BASE_URL, TOKEN, runtime, dir);
+            result = enrollment.enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir);
         } finally {
             runtime.close();
         }
@@ -225,7 +226,7 @@ class E2eeEnrollmentServiceTest {
         E2eeRuntime attempt = E2eeRuntimeFactory.initialize(dir, vaultPassword());
         try {
             SamvaadApiException e = assertThrows(SamvaadApiException.class,
-                    () -> enrollment.enroll(BASE_URL, TOKEN, attempt, dir));
+                    () -> enrollment.enroll(BASE_URL, TOKEN, SESSION_ID, attempt, dir));
             assertEquals(SamvaadApiException.Kind.SERVER_UNAVAILABLE, e.kind());
         } finally {
             attempt.close();
@@ -250,7 +251,7 @@ class E2eeEnrollmentServiceTest {
 
         try {
             assertThrows(E2eeException.class,
-                    () -> enrollment.enroll(BASE_URL, TOKEN, runtime, dir));
+                    () -> enrollment.enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir));
         } finally {
             runtime.close();
         }
@@ -266,7 +267,7 @@ class E2eeEnrollmentServiceTest {
 
         try {
             assertThrows(E2eeException.class,
-                    () -> enrollment.enroll(BASE_URL, TOKEN, runtime, dir));
+                    () -> enrollment.enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir));
         } finally {
             runtime.close();
         }
@@ -282,7 +283,7 @@ class E2eeEnrollmentServiceTest {
 
         try {
             assertThrows(SamvaadApiException.class,
-                    () -> enrollment.enroll(BASE_URL, TOKEN, runtime, dir));
+                    () -> enrollment.enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir));
         } finally {
             runtime.close();
         }
@@ -300,10 +301,95 @@ class E2eeEnrollmentServiceTest {
 
         try {
             assertThrows(E2eeException.class,
-                    () -> enrollment.enroll(BASE_URL, TOKEN, runtime, dir));
+                    () -> enrollment.enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir));
         } finally {
             runtime.close();
         }
+    }
+
+    @Test
+    void freshEnrollmentRecordsBoundSession(@TempDir Path dir) {
+        UUID serverId = UUID.randomUUID();
+        E2eeRuntime runtime = E2eeRuntimeFactory.initialize(dir, vaultPassword());
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, emptyListJson());
+        transport.addJson(201, enrollJson(deviceJson(serverId, runtime, "PENDING", 0), false));
+        E2eeEnrollmentService enrollment = new E2eeEnrollmentService(new E2eeDeviceApiClient(transport));
+
+        E2eeEnrollmentService.EnrolledDevice result;
+        try {
+            result = enrollment.enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir);
+        } finally {
+            runtime.close();
+        }
+
+        assertTrue(result.sessionBound());
+        assertEquals(SESSION_ID,
+                E2eeRuntimeFactory.loadServerBinding(dir).boundSessionIdOrNull());
+    }
+
+    @Test
+    void adoptionPreservesExistingBinding(@TempDir Path dir) {
+        UUID serverId = UUID.randomUUID();
+        UUID otherSession = UUID.randomUUID();
+        E2eeRuntime runtime = E2eeRuntimeFactory.initialize(dir, vaultPassword());
+        FakeHttpTransport fresh = new FakeHttpTransport();
+        fresh.addJson(200, emptyListJson());
+        fresh.addJson(201, enrollJson(deviceJson(serverId, runtime, "PENDING", 0), false));
+        try {
+            E2eeEnrollmentService.EnrolledDevice first =
+                    new E2eeEnrollmentService(new E2eeDeviceApiClient(fresh))
+                            .enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir);
+            assertTrue(first.sessionBound());
+
+            FakeHttpTransport adopt = new FakeHttpTransport();
+            adopt.addJson(200, listJson(deviceJson(serverId, runtime, "ACTIVE", 100)));
+            E2eeEnrollmentService.EnrolledDevice adopted =
+                    new E2eeEnrollmentService(new E2eeDeviceApiClient(adopt))
+                            .enroll(BASE_URL, TOKEN, otherSession, runtime, dir);
+            assertFalse(adopted.sessionBound());
+            assertEquals(SESSION_ID,
+                    E2eeRuntimeFactory.loadServerBinding(dir).boundSessionIdOrNull());
+
+            FakeHttpTransport readopt = new FakeHttpTransport();
+            readopt.addJson(200, listJson(deviceJson(serverId, runtime, "ACTIVE", 100)));
+            E2eeEnrollmentService.EnrolledDevice rebound =
+                    new E2eeEnrollmentService(new E2eeDeviceApiClient(readopt))
+                            .enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir);
+            assertTrue(rebound.sessionBound(),
+                    "adopting with the recorded session must report bound");
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
+    void noteSessionBindingOverwritesRecordedSession(@TempDir Path dir) {
+        UUID serverId = UUID.randomUUID();
+        UUID rotated = UUID.randomUUID();
+        E2eeRuntime runtime = E2eeRuntimeFactory.initialize(dir, vaultPassword());
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, emptyListJson());
+        transport.addJson(201, enrollJson(deviceJson(serverId, runtime, "PENDING", 0), false));
+        try {
+            new E2eeEnrollmentService(new E2eeDeviceApiClient(transport))
+                    .enroll(BASE_URL, TOKEN, SESSION_ID, runtime, dir);
+        } finally {
+            runtime.close();
+        }
+        assertEquals(SESSION_ID,
+                E2eeRuntimeFactory.loadServerBinding(dir).boundSessionIdOrNull());
+
+        E2eeRuntimeFactory.noteSessionBinding(dir, rotated);
+
+        assertEquals(rotated,
+                E2eeRuntimeFactory.loadServerBinding(dir).boundSessionIdOrNull());
+    }
+
+    @Test
+    void noteSessionBindingWithoutDeviceFails(@TempDir Path dir) {
+        assertThrows(E2eeException.class,
+                () -> E2eeRuntimeFactory.noteSessionBinding(dir, UUID.randomUUID()));
     }
 
     private static String emptyListJson() {

@@ -422,6 +422,7 @@ public final class TuiRenderer {
                 "F5              Refresh current view",
                 "Esc             Close help",
                 "F10, Ctrl+C     Quit (q quits in the list)",
+                "Ctrl+L          Log out (revokes session, keeps E2EE)",
                 "",
                 "In search: type, Enter lookup, Tab to Send,",
                 "Enter sends the friend request, Esc back.",

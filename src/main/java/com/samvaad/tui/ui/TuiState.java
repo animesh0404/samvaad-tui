@@ -66,6 +66,7 @@ public final class TuiState {
     private String composer = "";
     private UUID pendingSend;
     private boolean helpVisible;
+    private volatile boolean exitRequested;
     private String status = "";
     private View view = View.CHAT;
     private SearchFocus searchFocus = SearchFocus.INPUT;
@@ -98,6 +99,21 @@ public final class TuiState {
 
     public boolean helpVisible() {
         return helpVisible;
+    }
+
+    /**
+     * Whether a background action (explicit logout) asked the main loop to
+     * exit. Volatile: set from worker threads, read on the UI thread.
+     */
+    public boolean isExitRequested() {
+        return exitRequested;
+    }
+
+    /**
+     * Asks the main loop to exit after the current frame.
+     */
+    public void requestExit() {
+        exitRequested = true;
     }
 
     public String status() {

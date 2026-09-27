@@ -163,6 +163,14 @@ class TuiControllerTest {
     }
 
     @Test
+    void ctrlLRequestsLogout() {
+        assertEquals(TuiController.Action.LOGOUT,
+                controller.handle(new KeyStroke('l', true, false), new TuiState(), conversations));
+        assertEquals(TuiController.Action.LOGOUT,
+                controller.handle(new KeyStroke('L', true, false), new TuiState(), conversations));
+    }
+
+    @Test
     void enterOpensConversationOrRequestsSend() {
         TuiState listState = new TuiState();
         controller.handle(key(KeyType.Enter), listState, conversations);

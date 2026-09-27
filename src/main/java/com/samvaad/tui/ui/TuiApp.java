@@ -94,6 +94,9 @@ public final class TuiApp implements TuiLauncher {
         // within one tick even while the user is idle. Diff refresh keeps
         // idle frames cheap.
         while (true) {
+            if (state.isExitRequested()) {
+                return;
+            }
             screen.doResizeIfNecessary();
             triggerHistoryLoad(session.store(), session.historyLoader(), state.selectedIndex());
             ensureSubscribed(session, state);
@@ -121,6 +124,9 @@ public final class TuiApp implements TuiLauncher {
                     session.friendList().friends().size());
             if (action == TuiController.Action.QUIT) {
                 return;
+            }
+            if (action == TuiController.Action.LOGOUT) {
+                requestLogout(session, state);
             }
             if (action == TuiController.Action.SEND) {
                 sendComposer(session, state);
@@ -195,6 +201,50 @@ public final class TuiApp implements TuiLauncher {
         String notice = session.realtime().takeNotice();
         if (notice != null) {
             state.setStatus(notice);
+        }
+    }
+
+    /**
+     * Explicit user logout on a daemon worker so HTTP never blocks the UI
+     * thread. A successful logout exits the main loop; the process then
+     * ends without touching E2EE state. Failures stay in the TUI with an
+     * explicit status and never destroy the local credential.
+     */
+    private void requestLogout(TuiSession session, TuiState state) {
+        if (session.logout() == null) {
+            state.setStatus("Logout unavailable.");
+            return;
+        }
+        state.setStatus("Logging out...");
+        Thread worker = new Thread(() -> {
+            if (performLogout(session, state)) {
+                state.requestExit();
+            }
+        }, "samvaad-logout");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    /**
+     * Runs the session logout seam once. Returns true on success.
+     * Package-visible for tests.
+     */
+    static boolean performLogout(TuiSession session, TuiState state) {
+        LogoutService logout = session.logout();
+        if (logout == null) {
+            state.setStatus("Logout unavailable.");
+            return false;
+        }
+        try {
+            logout.logout();
+            state.setStatus("Logged out.");
+            return true;
+        } catch (SamvaadApiException e) {
+            state.setStatus("Logout failed (" + e.getMessage() + ").");
+            return false;
+        } catch (RuntimeException e) {
+            state.setStatus("Logout failed.");
+            return false;
         }
     }
 

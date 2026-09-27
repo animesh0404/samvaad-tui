@@ -10,7 +10,8 @@ import java.util.List;
  *
  * <p>Chat bindings (Phase 5, unchanged): Up/Down or k/j select, Tab
  * moves focus, Enter opens the highlighted conversation, Enter in the
- * composer requests a send, F1 or '?' toggles help, Esc closes help,
+ * composer requests a send, Ctrl+E requests an encrypted send, Ctrl+L
+ * requests logout, F1 or '?' toggles help, Esc closes help,
  * any other key dismisses the help overlay and is processed normally,
  * F10 / Ctrl+C / 'q' in the list quits. Typing otherwise edits the
  * composer when it is focused.
@@ -38,6 +39,7 @@ public final class TuiController {
     public enum Action {
         CONTINUE,
         QUIT,
+        LOGOUT,
         SEND,
         SEND_ENCRYPTED,
         LOOKUP_USER,
@@ -83,6 +85,9 @@ public final class TuiController {
         }
         if (key.getKeyType() == KeyType.F10 || isCtrlC(key)) {
             return Action.QUIT;
+        }
+        if (isCtrlL(key)) {
+            return Action.LOGOUT;
         }
         if (key.getKeyType() == KeyType.F1) {
             state.toggleHelp();
@@ -351,5 +356,13 @@ public final class TuiController {
         }
         char c = key.getCharacter();
         return c == 'e' || c == 'E' || c == 5;
+    }
+
+    private static boolean isCtrlL(KeyStroke key) {
+        if (key.getKeyType() != KeyType.Character || !key.isCtrlDown() || key.getCharacter() == null) {
+            return false;
+        }
+        char c = key.getCharacter();
+        return c == 'l' || c == 'L' || c == 12;
     }
 }

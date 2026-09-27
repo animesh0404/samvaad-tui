@@ -91,4 +91,16 @@ class TuiStateTest {
         state.setStatus("hello");
         assertEquals("hello", state.status());
     }
+
+    @Test
+    void exitIsNotRequestedInitially() {
+        assertFalse(new TuiState().isExitRequested());
+    }
+
+    @Test
+    void requestExitSetsFlag() {
+        TuiState state = new TuiState();
+        state.requestExit();
+        assertTrue(state.isExitRequested());
+    }
 }
