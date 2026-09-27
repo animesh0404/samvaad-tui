@@ -216,6 +216,25 @@ public final class E2eeRuntime implements AutoCloseable {
     }
 
     /**
+     * The underlying adapter and store for same-package orchestration
+     * (message sending builds its own {@code SamvaadCryptoService} with
+     * live transport seams). Never exposed to UI code.
+     */
+    LibSignalAdapter adapter() {
+        ensureOpen();
+        return adapter;
+    }
+
+    /**
+     * The underlying store for same-package orchestration. Never exposed
+     * to UI code.
+     */
+    ClientCryptoStore stores() {
+        ensureOpen();
+        return stores;
+    }
+
+    /**
      * Locks the vault (zeroing key material) and refuses further use.
      * Idempotent.
      */

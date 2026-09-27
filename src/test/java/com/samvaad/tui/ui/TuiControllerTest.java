@@ -188,6 +188,34 @@ class TuiControllerTest {
     }
 
     @Test
+    void ctrlESendsEncryptedFromComposer() {
+        TuiState composerState = new TuiState();
+        composerState.toggleFocus();
+        composerState.appendToComposer('h');
+        assertEquals(TuiController.Action.SEND_ENCRYPTED,
+                controller.handle(new KeyStroke('e', true, false), composerState, conversations));
+    }
+
+    @Test
+    void blankComposerCtrlEHintsInsteadOfSending() {
+        TuiState composerState = new TuiState();
+        composerState.toggleFocus();
+
+        assertEquals(TuiController.Action.CONTINUE,
+                controller.handle(new KeyStroke('e', true, false), composerState, conversations));
+        assertTrue(composerState.status().contains("Type a message"));
+    }
+
+    @Test
+    void ctrlEDoesNotTypeInComposer() {
+        TuiState composerState = new TuiState();
+        composerState.toggleFocus();
+
+        controller.handle(new KeyStroke('e', true, false), composerState, conversations);
+        assertEquals("", composerState.composer());
+    }
+
+    @Test
     void nullKeyIsIgnored() {
         assertEquals(TuiController.Action.CONTINUE,
                 controller.handle(null, new TuiState(), conversations));

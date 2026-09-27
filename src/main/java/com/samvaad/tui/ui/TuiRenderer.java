@@ -415,6 +415,7 @@ public final class TuiRenderer {
                 "Left/Right      Switch Conversations/Friends tabs",
                 "Tab             Move focus (list / composer)",
                 "Enter           Open conversation / send message",
+                "Ctrl+E          Send composer text encrypted",
                 "/               Search user by exact username",
                 "r               Friend requests (incoming/outgoing)",
                 "F1 or ?         Toggle this help",

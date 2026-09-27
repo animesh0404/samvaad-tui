@@ -97,7 +97,7 @@ class TuiAppConversationRefreshTest {
         RealtimeManager realtime = new RealtimeManager(
                 new FakeRealtimeClient(), "http://localhost:8080", "token", store, history);
         return new TuiSession("alice", "http://localhost:8080", store, history, realtime,
-                new FriendRequestStore(), stubFriends(), new FriendStore(), conversations);
+                new FriendRequestStore(), stubFriends(), new FriendStore(), conversations, null);
     }
 
     private static void await(java.util.function.BooleanSupplier check, String what)

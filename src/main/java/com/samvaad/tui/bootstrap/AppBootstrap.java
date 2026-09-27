@@ -55,18 +55,21 @@ public final class AppBootstrap {
     private final UserLookupApiClient userLookupApi;
     private final FriendRequestApiClient friendRequestApi;
     private final FriendsApiClient friendsApi;
+    private final E2eeInitializer e2ee;
     private final RealtimeClient realtimeClient;
     private final TuiLauncher tui;
 
     public AppBootstrap(ConsoleIO io, AuthApiClient authApi, ConversationApiClient conversationsApi,
             UserLookupApiClient userLookupApi, FriendRequestApiClient friendRequestApi,
-            FriendsApiClient friendsApi, RealtimeClient realtimeClient, TuiLauncher tui) {
+            FriendsApiClient friendsApi, E2eeInitializer e2ee, RealtimeClient realtimeClient,
+            TuiLauncher tui) {
         this.io = Objects.requireNonNull(io, "io");
         this.authApi = Objects.requireNonNull(authApi, "authApi");
         this.conversationsApi = Objects.requireNonNull(conversationsApi, "conversationsApi");
         this.userLookupApi = Objects.requireNonNull(userLookupApi, "userLookupApi");
         this.friendRequestApi = Objects.requireNonNull(friendRequestApi, "friendRequestApi");
         this.friendsApi = Objects.requireNonNull(friendsApi, "friendsApi");
+        this.e2ee = Objects.requireNonNull(e2ee, "e2ee");
         this.realtimeClient = Objects.requireNonNull(realtimeClient, "realtimeClient");
         this.tui = Objects.requireNonNull(tui, "tui");
     }
@@ -105,6 +108,8 @@ public final class AppBootstrap {
         System.out.println("Session: " + auth.sessionId());
         System.out.println("Authenticated: yes (expires in " + auth.expiresInSeconds() + " seconds)");
 
+        E2eeMessageSender e2eeSender = e2ee.initialize(config.serverUrl(), auth.accessToken());
+
         List<ConversationEntry> entries;
         try {
             entries = loadConversations(config.serverUrl(), auth.accessToken());
@@ -131,7 +136,7 @@ public final class AppBootstrap {
         }
         TuiSession tuiSession =
                 new TuiSession(config.username(), config.serverUrl(), store, history, realtime,
-                        friendStore, friends, friendList, conversationLoader);
+                        friendStore, friends, friendList, conversationLoader, e2eeSender);
         int tuiExit = 0;
         try {
             tui.launch(tuiSession);

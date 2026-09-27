@@ -189,7 +189,10 @@ class TuiRendererTest {
 
     @Test
     void helpOverlayShowsFullContentWithPadding() throws IOException {
-        Screen screen = new TerminalScreen(new DefaultVirtualTerminal(new TerminalSize(100, 30)));
+        // Tall enough that the centered overlay never overlaps sidebar
+        // rows: the padding assertion is about help-box geometry, not
+        // about content showing through behind the overlay.
+        Screen screen = new TerminalScreen(new DefaultVirtualTerminal(new TerminalSize(100, 34)));
         screen.startScreen();
         try {
             TuiState state = new TuiState();
@@ -198,7 +201,7 @@ class TuiRendererTest {
             screen.refresh();
 
             List<String> rows = new ArrayList<>();
-            for (int row = 0; row < 30; row++) {
+            for (int row = 0; row < 34; row++) {
                 rows.add(row(screen, row, 100));
             }
             String text = String.join("\n", rows);

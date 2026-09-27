@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.samvaad.tui.api.AuthApiClient;
 import com.samvaad.tui.api.ConversationApiClient;
+import com.samvaad.tui.api.E2eeDeviceApiClient;
+import com.samvaad.tui.api.E2eeMessageApiClient;
 import com.samvaad.tui.api.FakeHttpTransport;
 import com.samvaad.tui.api.FriendRequestApiClient;
 import com.samvaad.tui.api.FriendsApiClient;
@@ -46,6 +48,7 @@ class AppBootstrapTest {
         return new AppBootstrap(io, new AuthApiClient(transport),
                 new ConversationApiClient(transport), new UserLookupApiClient(transport),
                 new FriendRequestApiClient(transport), new FriendsApiClient(transport),
+                (serverUrl, accessToken) -> null,
                 realtime, tui);
     }
 

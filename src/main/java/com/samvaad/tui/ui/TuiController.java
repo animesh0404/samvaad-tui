@@ -39,6 +39,7 @@ public final class TuiController {
         CONTINUE,
         QUIT,
         SEND,
+        SEND_ENCRYPTED,
         LOOKUP_USER,
         SEND_FRIEND_REQUEST,
         ACCEPT_REQUEST,
@@ -217,6 +218,13 @@ public final class TuiController {
     }
 
     private Action handleComposerKeys(KeyStroke key, TuiState state) {
+        if (isCtrlE(key)) {
+            if (state.composer().isBlank()) {
+                state.setStatus("Type a message first.");
+                return Action.CONTINUE;
+            }
+            return Action.SEND_ENCRYPTED;
+        }
         if (key.getKeyType() == KeyType.Enter) {
             if (state.composer().isBlank()) {
                 state.setStatus("Type a message first.");
@@ -335,5 +343,13 @@ public final class TuiController {
         }
         char c = key.getCharacter();
         return c == 'c' || c == 'C' || c == 3;
+    }
+
+    private static boolean isCtrlE(KeyStroke key) {
+        if (key.getKeyType() != KeyType.Character || !key.isCtrlDown() || key.getCharacter() == null) {
+            return false;
+        }
+        char c = key.getCharacter();
+        return c == 'e' || c == 'E' || c == 5;
     }
 }

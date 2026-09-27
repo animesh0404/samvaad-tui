@@ -59,10 +59,16 @@ public final class E2eeEnrollmentService {
     /**
      * Outcome of one enrollment attempt. {@code recoveryCodes} is non-null
      * only on a first-device bootstrap and must be displayed once, never
-     * stored.
+     * stored. {@code sessionBound} is true only when this call created the
+     * device: the server binds the calling session at creation, so only a
+     * freshly enrolled device can submit or upload with the current
+     * session. Adopted devices (reconciled or conflict-adopted) belong to
+     * an older dead session until a future slice provides another binding
+     * path.
      */
     public record EnrolledDevice(UUID serverDeviceId, int signalDeviceId,
-            E2eeEnrollmentState state, List<String> recoveryCodesOrNull, long availablePrekeys) {
+            E2eeEnrollmentState state, List<String> recoveryCodesOrNull, long availablePrekeys,
+            boolean sessionBound) {
         public EnrolledDevice {
             Objects.requireNonNull(serverDeviceId, "serverDeviceId");
             Objects.requireNonNull(state, "state");
@@ -92,18 +98,32 @@ public final class E2eeEnrollmentService {
             if (known != null) {
                 return adopt(serverUrl, accessToken, runtime, e2eeDir, known);
             }
-            EnrollDeviceResponse enrolled = enrollNew(serverUrl, accessToken, runtime);
+            EnrollDeviceResponse enrolled;
+            try {
+                enrolled = enrollNew(serverUrl, accessToken, runtime);
+            } catch (SamvaadApiException e) {
+                if (e.kind() != SamvaadApiException.Kind.CONFLICT) {
+                    throw e;
+                }
+                E2eeDeviceResponse conflicted = findByIdentity(
+                        listDevices(serverUrl, accessToken), runtime.identityPublicKey(),
+                        runtime.registrationId());
+                if (conflicted == null) {
+                    throw e;
+                }
+                return adopt(serverUrl, accessToken, runtime, e2eeDir, conflicted);
+            }
             E2eeDeviceResponse device = enrolled.device();
             E2eeEnrollmentState state = toLocalState(device.status());
             if (state == E2eeEnrollmentState.ACTIVE) {
                 long available = uploadInitialPrekeys(serverUrl, accessToken, runtime, e2eeDir, device);
                 persistBinding(e2eeDir, device, state, PrekeyManager.BATCH_SIZE);
                 return new EnrolledDevice(device.deviceId(), device.signalDeviceId(), state,
-                        enrolled.recoveryCodes(), available);
+                        enrolled.recoveryCodes(), available, true);
             }
             persistBinding(e2eeDir, device, state, 0);
             return new EnrolledDevice(device.deviceId(), device.signalDeviceId(), state, null,
-                    device.availablePrekeys());
+                    device.availablePrekeys(), true);
         } finally {
             Arrays.fill(localIdentity, (byte) 0);
         }
@@ -118,12 +138,13 @@ public final class E2eeEnrollmentService {
         if (state == E2eeEnrollmentState.ACTIVE && known.availablePrekeys() == 0) {
             long available = uploadInitialPrekeys(serverUrl, accessToken, runtime, e2eeDir, known);
             persistBinding(e2eeDir, known, state, PrekeyManager.BATCH_SIZE);
-            return new EnrolledDevice(known.deviceId(), known.signalDeviceId(), state, null, available);
+            return new EnrolledDevice(known.deviceId(), known.signalDeviceId(), state, null,
+                    available, false);
         }
         int mark = state == E2eeEnrollmentState.ACTIVE ? PrekeyManager.BATCH_SIZE : 0;
         persistBinding(e2eeDir, known, state, mark);
         return new EnrolledDevice(known.deviceId(), known.signalDeviceId(), state, null,
-                known.availablePrekeys());
+                known.availablePrekeys(), false);
     }
 
     private EnrollDeviceResponse enrollNew(String serverUrl, String accessToken, E2eeRuntime runtime) {
@@ -133,19 +154,7 @@ public final class E2eeEnrollmentService {
                 runtime.kyberPrekeyId(), base64(runtime.kyberPublicKey()),
                 base64(runtime.kyberSignature()), AuthApiClient.CLIENT_PLATFORM,
                 AuthApiClient.CLIENT_NAME, AuthApiClient.CLIENT_VERSION);
-        try {
-            return devices.enrollDevice(serverUrl, accessToken, request);
-        } catch (SamvaadApiException e) {
-            if (e.kind() == SamvaadApiException.Kind.CONFLICT) {
-                E2eeDeviceResponse known = findByIdentity(
-                        listDevices(serverUrl, accessToken), runtime.identityPublicKey(),
-                        runtime.registrationId());
-                if (known != null) {
-                    return new EnrollDeviceResponse(known, null, null);
-                }
-            }
-            throw e;
-        }
+        return devices.enrollDevice(serverUrl, accessToken, request);
     }
 
     private long uploadInitialPrekeys(String serverUrl, String accessToken, E2eeRuntime runtime,

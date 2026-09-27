@@ -8,6 +8,8 @@ import com.googlecode.lanterna.terminal.DefaultTerminalFactory;
 import com.googlecode.lanterna.terminal.Terminal;
 import com.googlecode.lanterna.terminal.ansi.UnixLikeTerminal;
 import com.samvaad.tui.api.SamvaadApiException;
+import com.samvaad.tui.bootstrap.E2eeMessageSender;
+import com.samvaad.tui.bootstrap.E2eeSendException;
 import com.samvaad.tui.model.ConversationEntry;
 import com.samvaad.tui.model.ConversationStore;
 import com.samvaad.tui.model.FirstMessage;
@@ -123,6 +125,9 @@ public final class TuiApp implements TuiLauncher {
             if (action == TuiController.Action.SEND) {
                 sendComposer(session, state);
             }
+            if (action == TuiController.Action.SEND_ENCRYPTED) {
+                sendEncrypted(session, state);
+            }
             if (action == TuiController.Action.LOOKUP_USER) {
                 lookupUser(session, state);
             }
@@ -191,6 +196,48 @@ public final class TuiApp implements TuiLauncher {
         if (notice != null) {
             state.setStatus(notice);
         }
+    }
+
+    /**
+     * Sends the composer text through the encrypted path only. Never
+     * touches the plaintext realtime send and never falls back to it:
+     * failures surface as status text. Runs off the UI thread like the
+     * other network actions.
+     */
+    private void sendEncrypted(TuiSession session, TuiState state) {
+        List<ConversationEntry> conversations = session.store().conversations();
+        if (conversations.isEmpty()) {
+            return;
+        }
+        ConversationEntry selected = conversations.get(
+                Math.min(state.selectedIndex(), conversations.size() - 1));
+        if (session.e2eeSender() == null) {
+            state.setStatus("E2EE unavailable (not set up this session).");
+            return;
+        }
+        if (selected.otherParticipantUsername() == null) {
+            state.setStatus("Cannot send encrypted: recipient username is unknown.");
+            return;
+        }
+        String text = state.composer();
+        UUID messageRequestId = UUID.randomUUID();
+        state.clearComposer();
+        state.setStatus("Encrypting...");
+        Thread worker = new Thread(() -> {
+            try {
+                E2eeMessageSender.SentMessage sent = session.e2eeSender().send(messageRequestId,
+                        selected.otherParticipantUserId(), selected.otherParticipantUsername(), text);
+                state.setStatus("Sent (encrypted, seq " + sent.sequenceNumber() + ").");
+            } catch (E2eeSendException e) {
+                state.setStatus("Encrypted send failed (" + e.getMessage() + ").");
+            } catch (SamvaadApiException e) {
+                state.setStatus("Encrypted send failed (" + e.getMessage() + ").");
+            } catch (RuntimeException e) {
+                state.setStatus("Encrypted send failed.");
+            }
+        }, "samvaad-e2ee-send");
+        worker.setDaemon(true);
+        worker.start();
     }
 
     /**
