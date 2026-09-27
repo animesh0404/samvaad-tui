@@ -1,9 +1,19 @@
 rootProject.name = 'samvaad-tui'
 
-// Slice 1: consume the reusable JVM E2EE client library through a composite
-// build. The sibling `e2ee-client` build provides `com.samvaad:e2ee-client`
-// (plain JVM library, no Spring); dependency substitution resolves the
-// TUI's `implementation 'com.samvaad:e2ee-client:0.1.0'` to the included
-// build without requiring a published artifact. Relative path is from this
-// settings file's directory (the TUI repo root) to the sibling build root.
-includeBuild('../samvaad-server/e2ee-client')
+// Consume the reusable JVM E2EE client library through a composite
+// build. The standalone `samvaad-e2ee-lib` repository (sibling checkout)
+// provides `com.samvaad:e2ee-client` (plain JVM library, no Spring); it is
+// the only source of truth for the client implementation that used to live
+// inside the server repository. Relative path is from this settings file's
+// directory (the TUI repo root) to the sibling repository root.
+//
+// The library repository's root project is named `samvaad-e2ee-lib` while
+// its artifact remains `com.samvaad:e2ee-client:0.1.0`, so the default
+// composite substitution (which matches on project name) does not apply;
+// the explicit rule below maps the consumed coordinate to the included
+// build without requiring a published artifact.
+includeBuild('../samvaad-e2ee-lib') {
+    dependencySubstitution {
+        substitute(module('com.samvaad:e2ee-client:0.1.0')).using(project(':'))
+    }
+}

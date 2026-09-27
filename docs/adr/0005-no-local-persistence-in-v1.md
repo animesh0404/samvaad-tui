@@ -61,7 +61,7 @@ The original decision above is otherwise unchanged. In particular:
   never printed, never stored, has no environment fallback, and its array
   is zeroed after use.
 - Crypto-store state persists via `FileBackedClientCryptoStore`. Snapshot
-  and vault formats/versioning remain owned by the extracted `e2ee-client`
-  library, never by the TUI.
+  and vault formats/versioning remain owned by the standalone
+  `samvaad-e2ee-lib` library (`com.samvaad:e2ee-client`), never by the TUI.
 - The existing identity is never silently replaced: unknown, corrupt, or
   mismatched state fails closed.
