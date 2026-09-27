@@ -46,6 +46,15 @@ public final class ConsolePrompter {
         return io.readPassword("Password: ");
     }
 
+    /**
+     * Prompts for the E2EE vault passphrase. Like the login password, the
+     * value is never echoed when a real console is available and is never
+     * stored; the caller zeroes the array after use.
+     */
+    public char[] promptE2eeVaultPassword() {
+        return io.readPassword("E2EE vault password: ");
+    }
+
     private static boolean isPresent(String value) {
         return value != null && !value.trim().isEmpty();
     }

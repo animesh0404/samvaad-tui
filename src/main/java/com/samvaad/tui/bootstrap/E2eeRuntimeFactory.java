@@ -1,0 +1,386 @@
+package com.samvaad.tui.bootstrap;
+
+import com.samvaad.e2ee.client.CryptoTypes;
+import com.samvaad.e2ee.client.SamvaadCryptoService;
+import com.samvaad.e2ee.client.SamvaadCryptoServiceImpl;
+import com.samvaad.e2ee.client.SignalAdapter;
+import com.samvaad.e2ee.client.persist.FileBackedClientCryptoStore;
+import com.samvaad.e2ee.client.signal.FilePrivateKeyVault;
+import com.samvaad.e2ee.client.signal.LibSignalAdapter;
+import com.samvaad.e2ee.client.signal.PrivateKeyVault;
+import java.io.IOException;
+import java.io.Reader;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.List;
+import java.util.Objects;
+import java.util.Properties;
+import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.stream.Stream;
+
+/**
+ * Opens (or first-initializes) the TUI-owned local E2EE device.
+ *
+ * <p>State directory layout (see {@link E2eePaths}):
+ *
+ * <pre>
+ * &lt;e2eeDir&gt;/
+ *   device.properties            non-secret local bootstrap metadata
+ *   crypto-vault-v1.dat          encrypted private-key custody (library-owned format)
+ *   client-crypto-store-v1.json  crypto-store snapshot (library-owned format)
+ * </pre>
+ *
+ * <p>Only {@code device.properties} is TUI-owned: the local device id,
+ * registration id, prekey ids, and the <em>public</em> last-resort Kyber
+ * triple (reserved for future enrollment). Vault and snapshot formats and
+ * versioning stay owned by {@code e2ee-client}. No OTPKs are generated in
+ * this slice: without an upload path, allocating one-time ids now would
+ * only complicate the enrollment slice that owns batch policy.
+ *
+ * <p>Open matrix (fail-closed; an existing identity is never silently
+ * replaced):
+ *
+ * <ul>
+ *   <li>no metadata + non-empty directory → refuse (would orphan state);</li>
+ *   <li>no metadata + empty directory → generate ids, persist metadata,
+ *       open vault/store, provision identity + signed prekey + Kyber;</li>
+ *   <li>metadata + provisioned store + non-empty vault → reuse;</li>
+ *   <li>metadata + provisioned store + empty vault → refuse (custody
+ *       lost);</li>
+ *   <li>metadata + unprovisioned store + empty vault → provision (first-init
+ *       crash retry);</li>
+ *   <li>metadata + unprovisioned store + non-empty vault → refuse (would
+ *       orphan sealed material);</li>
+ *   <li>wrong vault password, corrupt snapshot, or device/registration
+ *       mismatch → refuse via the library, wrapped in
+ *       {@link E2eeException}.</li>
+ * </ul>
+ *
+ * <p>Offline-only: the returned runtime's {@link SamvaadCryptoService} uses
+ * transport stubs that fail closed until enrollment arrives in a later
+ * slice. No network, no login, no server required.
+ *
+ * <p>The vault password array is zeroed before return in all cases. It is
+ * never printed, never stored, and has no environment fallback.
+ */
+public final class E2eeRuntimeFactory {
+
+    private static final String METADATA_FILE = "device.properties";
+    private static final int SIGNED_PREKEY_ID = 1;
+    private static final int KYBER_PREKEY_ID = 1;
+
+    private E2eeRuntimeFactory() {
+    }
+
+    /**
+     * Opens the device in {@code e2eeDir}, initializing it on first use.
+     * The password array is zeroed before return.
+     */
+    public static E2eeRuntime initialize(Path e2eeDir, char[] vaultPassword) {
+        Objects.requireNonNull(e2eeDir, "e2eeDir");
+        Objects.requireNonNull(vaultPassword, "vaultPassword");
+        if (vaultPassword.length == 0) {
+            throw new E2eeException("E2EE vault password must not be empty.");
+        }
+        try {
+            Files.createDirectories(e2eeDir);
+        } catch (IOException e) {
+            throw new E2eeException("Cannot create E2EE state directory: " + e2eeDir, e);
+        }
+        try {
+            return open(e2eeDir, vaultPassword);
+        } finally {
+            Arrays.fill(vaultPassword, '\0');
+        }
+    }
+
+    /**
+     * Prompts for the vault password over {@code io} and opens the device.
+     * Fails clearly when interactive entry is impossible; the password is
+     * never echoed by this layer (see {@link ConsoleIO#readPassword}).
+     */
+    public static E2eeRuntime initializeInteractive(Path e2eeDir, ConsoleIO io) {
+        Objects.requireNonNull(e2eeDir, "e2eeDir");
+        Objects.requireNonNull(io, "io");
+        char[] password;
+        try {
+            password = new ConsolePrompter(io).promptE2eeVaultPassword();
+        } catch (RuntimeException e) {
+            throw new E2eeException(
+                    "E2EE vault requires interactive password entry and none was available.", e);
+        }
+        return initialize(e2eeDir, password);
+    }
+
+    private static E2eeRuntime open(Path dir, char[] password) {
+        Path metadataFile = dir.resolve(METADATA_FILE);
+        DeviceMetadata metadata = readMetadata(metadataFile);
+        if (metadata == null) {
+            if (!isEmptyDir(dir)) {
+                throw new E2eeException("E2EE state directory has files but no " + METADATA_FILE
+                        + "; refusing to invent a replacement identity.");
+            }
+            metadata = DeviceMetadata.fresh();
+            writeMetadata(metadataFile, metadata);
+        }
+        FilePrivateKeyVault vault;
+        try {
+            vault = FilePrivateKeyVault.open(dir, metadata.deviceId, password);
+        } catch (RuntimeException e) {
+            throw new E2eeException(
+                    "Cannot unlock the E2EE vault (wrong password or tampered state).", e);
+        }
+        try {
+            FileBackedClientCryptoStore stores;
+            try {
+                stores = FileBackedClientCryptoStore.open(dir, metadata.deviceId, metadata.registrationId);
+            } catch (RuntimeException e) {
+                throw new E2eeException("Cannot open the E2EE crypto store.", e);
+            }
+            LibSignalAdapter adapter = new LibSignalAdapter(metadata.registrationId, vault);
+            DeviceMetadata current = reconcile(metadataFile, metadata, vault, stores, adapter);
+            byte[] identityPublicKey = stores.identityPublicKey();
+            String fingerprint = adapter.fingerprint(identityPublicKey);
+            SamvaadCryptoService service = new SamvaadCryptoServiceImpl(
+                    adapter, stores, new OfflineTransport(), new OfflineTransport());
+            return new E2eeRuntime(current.deviceId, current.registrationId, identityPublicKey,
+                    fingerprint, current.kyberPrekeyId, current.kyberPublicKey(),
+                    current.kyberSignature(), service, vault);
+        } catch (RuntimeException e) {
+            vault.close();
+            throw e;
+        }
+    }
+
+    private static DeviceMetadata reconcile(Path metadataFile, DeviceMetadata metadata,
+            FilePrivateKeyVault vault, FileBackedClientCryptoStore stores, LibSignalAdapter adapter) {
+        boolean provisioned = stores.isProvisioned();
+        boolean vaultHasKeys = vaultHasKeys(vault);
+        if (provisioned && vaultHasKeys) {
+            if (!metadata.hasKyberTriple()) {
+                throw new E2eeException("E2EE state is inconsistent (provisioned store without "
+                        + "a recorded Kyber triple); refusing to guess.");
+            }
+            return metadata;
+        }
+        if (provisioned) {
+            throw new E2eeException(
+                    "E2EE vault is empty for a provisioned store; private material is lost.");
+        }
+        if (vaultHasKeys) {
+            throw new E2eeException("E2EE vault holds sealed material for an unprovisioned "
+                    + "store; provisioning now would orphan it.");
+        }
+        SignalAdapter.LocalIdentity identity;
+        SignalAdapter.SignedPrekeyPair signed;
+        SignalAdapter.KyberPrekeyPair kyber;
+        try {
+            identity = adapter.generateIdentity();
+            signed = adapter.generateSignedPrekey(identity.identityPrivate(), metadata.signedPrekeyId);
+            stores.provision(identity, signed);
+            kyber = adapter.generateKyberPrekey(stores.identityPrivate(), metadata.kyberPrekeyId);
+        } catch (RuntimeException e) {
+            throw new E2eeException("Cannot provision the local E2EE device.", e);
+        }
+        DeviceMetadata withTriple = metadata.withKyberTriple(kyber.publicKey(), kyber.signature());
+        writeMetadata(metadataFile, withTriple);
+        return withTriple;
+    }
+
+    private static boolean vaultHasKeys(FilePrivateKeyVault vault) {
+        try {
+            for (PrivateKeyVault.KeyKind kind : PrivateKeyVault.KeyKind.values()) {
+                if (!vault.handlesOfKind(kind).isEmpty()) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (RuntimeException e) {
+            throw new E2eeException("Cannot inspect the E2EE vault.", e);
+        }
+    }
+
+    private static boolean isEmptyDir(Path dir) {
+        try (Stream<Path> entries = Files.list(dir)) {
+            return entries.findAny().isEmpty();
+        } catch (IOException e) {
+            throw new E2eeException("Cannot inspect E2EE state directory: " + dir, e);
+        }
+    }
+
+    private static DeviceMetadata readMetadata(Path file) {
+        if (!Files.exists(file)) {
+            return null;
+        }
+        Properties props = new Properties();
+        try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            props.load(reader);
+        } catch (IOException | IllegalArgumentException e) {
+            throw new E2eeException("E2EE device metadata is corrupt: " + file, e);
+        }
+        try {
+            return DeviceMetadata.parse(props);
+        } catch (IllegalArgumentException e) {
+            throw new E2eeException("E2EE device metadata is corrupt: " + file, e);
+        }
+    }
+
+    private static void writeMetadata(Path file, DeviceMetadata metadata) {
+        Path tmp;
+        try {
+            tmp = Files.createTempFile(
+                    Objects.requireNonNull(file.getParent(), "parent"), "device", ".tmp");
+        } catch (IOException e) {
+            throw new E2eeException("Cannot persist E2EE device metadata: " + file, e);
+        }
+        try (Writer writer = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8,
+                StandardOpenOption.TRUNCATE_EXISTING)) {
+            metadata.render().store(writer, null);
+            writer.flush();
+        } catch (IOException e) {
+            throw new E2eeException("Cannot persist E2EE device metadata: " + file, e);
+        }
+        try {
+            try {
+                Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException e) {
+            throw new E2eeException("Cannot persist E2EE device metadata: " + file, e);
+        }
+    }
+
+    /**
+     * Offline transport: fails closed until a later slice enrolls the device
+     * and provides real claim/submit clients. Unchecked, so the declared
+     * library signatures need no adaptation.
+     */
+    private static final class OfflineTransport implements SamvaadCryptoService.ClaimClient,
+            SamvaadCryptoService.SubmitClient {
+
+        @Override
+        public CryptoTypes.RecipientBundle claim(UUID recipientDeviceId, UUID claimRequestId) {
+            throw new E2eeException(
+                    "E2EE device is not enrolled: prekey claims arrive in a later slice.");
+        }
+
+        @Override
+        public void submit(UUID messageRequestId, List<CryptoTypes.OutboundEnvelope> envelopes) {
+            throw new E2eeException(
+                    "E2EE device is not enrolled: message transport arrives in a later slice.");
+        }
+    }
+
+    /**
+     * Non-secret local bootstrap metadata. The Kyber triple is public key
+     * material reserved for future enrollment; everything else identifies
+     * the device to the local store and vault.
+     */
+    private static final class DeviceMetadata {
+
+        final UUID deviceId;
+        final int registrationId;
+        final int signedPrekeyId;
+        final int kyberPrekeyId;
+        final byte[] kyberPublicKeyOrNull;
+        final byte[] kyberSignatureOrNull;
+
+        private DeviceMetadata(UUID deviceId, int registrationId, int signedPrekeyId,
+                int kyberPrekeyId, byte[] kyberPublicKeyOrNull, byte[] kyberSignatureOrNull) {
+            this.deviceId = deviceId;
+            this.registrationId = registrationId;
+            this.signedPrekeyId = signedPrekeyId;
+            this.kyberPrekeyId = kyberPrekeyId;
+            this.kyberPublicKeyOrNull = kyberPublicKeyOrNull;
+            this.kyberSignatureOrNull = kyberSignatureOrNull;
+        }
+
+        static DeviceMetadata fresh() {
+            return new DeviceMetadata(UUID.randomUUID(),
+                    ThreadLocalRandom.current().nextInt(1, Integer.MAX_VALUE),
+                    SIGNED_PREKEY_ID, KYBER_PREKEY_ID, null, null);
+        }
+
+        static DeviceMetadata parse(Properties props) {
+            String deviceText = props.getProperty("deviceId");
+            String regText = props.getProperty("registrationId");
+            String signedText = props.getProperty("signedPrekeyId");
+            String kyberIdText = props.getProperty("kyberPrekeyId");
+            if (deviceText == null || regText == null || signedText == null || kyberIdText == null) {
+                throw new IllegalArgumentException("missing required device metadata");
+            }
+            UUID deviceId = UUID.fromString(deviceText.trim());
+            int registrationId = Integer.parseInt(regText.trim());
+            int signedPrekeyId = Integer.parseInt(signedText.trim());
+            int kyberPrekeyId = Integer.parseInt(kyberIdText.trim());
+            if (registrationId < 1) {
+                throw new IllegalArgumentException("registrationId out of range");
+            }
+            String kyberKeyText = props.getProperty("kyberPublicKey");
+            String kyberSigText = props.getProperty("kyberSignature");
+            byte[] kyberPublicKey = null;
+            byte[] kyberSignature = null;
+            if (kyberKeyText != null || kyberSigText != null) {
+                if (kyberKeyText == null || kyberSigText == null) {
+                    throw new IllegalArgumentException("partial Kyber triple in device metadata");
+                }
+                kyberPublicKey = Base64.getDecoder().decode(kyberKeyText.trim());
+                kyberSignature = Base64.getDecoder().decode(kyberSigText.trim());
+                if (kyberPublicKey.length == 0 || kyberSignature.length == 0) {
+                    throw new IllegalArgumentException("empty Kyber triple in device metadata");
+                }
+            }
+            return new DeviceMetadata(deviceId, registrationId, signedPrekeyId, kyberPrekeyId,
+                    kyberPublicKey, kyberSignature);
+        }
+
+        boolean hasKyberTriple() {
+            return kyberPublicKeyOrNull != null && kyberSignatureOrNull != null;
+        }
+
+        byte[] kyberPublicKey() {
+            if (kyberPublicKeyOrNull == null) {
+                throw new E2eeException("E2EE device metadata has no recorded Kyber triple.");
+            }
+            return Arrays.copyOf(kyberPublicKeyOrNull, kyberPublicKeyOrNull.length);
+        }
+
+        byte[] kyberSignature() {
+            if (kyberSignatureOrNull == null) {
+                throw new E2eeException("E2EE device metadata has no recorded Kyber triple.");
+            }
+            return Arrays.copyOf(kyberSignatureOrNull, kyberSignatureOrNull.length);
+        }
+
+        DeviceMetadata withKyberTriple(byte[] publicKey, byte[] signature) {
+            return new DeviceMetadata(deviceId, registrationId, signedPrekeyId, kyberPrekeyId,
+                    Arrays.copyOf(publicKey, publicKey.length),
+                    Arrays.copyOf(signature, signature.length));
+        }
+
+        Properties render() {
+            Properties props = new Properties();
+            props.setProperty("deviceId", deviceId.toString());
+            props.setProperty("registrationId", Integer.toString(registrationId));
+            props.setProperty("signedPrekeyId", Integer.toString(signedPrekeyId));
+            props.setProperty("kyberPrekeyId", Integer.toString(kyberPrekeyId));
+            if (hasKyberTriple()) {
+                props.setProperty("kyberPublicKey",
+                        Base64.getEncoder().encodeToString(kyberPublicKeyOrNull));
+                props.setProperty("kyberSignature",
+                        Base64.getEncoder().encodeToString(kyberSignatureOrNull));
+            }
+            return props;
+        }
+    }
+}

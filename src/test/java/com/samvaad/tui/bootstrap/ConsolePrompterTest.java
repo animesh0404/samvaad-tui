@@ -40,4 +40,13 @@ class ConsolePrompterTest {
         assertArrayEquals("s3cret".toCharArray(), prompter.promptPassword());
         assertEquals("Password: ", io.lastPasswordPrompt());
     }
+
+    @Test
+    void delegatesE2eeVaultPasswordPrompt() {
+        FakeConsoleIO io = new FakeConsoleIO();
+        io.setPassword("vault-pass".toCharArray());
+        ConsolePrompter prompter = new ConsolePrompter(io);
+        assertArrayEquals("vault-pass".toCharArray(), prompter.promptE2eeVaultPassword());
+        assertEquals("E2EE vault password: ", io.lastPasswordPrompt());
+    }
 }
