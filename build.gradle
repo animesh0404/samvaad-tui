@@ -27,9 +27,11 @@ dependencies {
     // Local E2EE device runtime: the reusable JVM client library from the
     // standalone `samvaad-e2ee-lib` repository
     // (SamvaadCryptoService/SignalAdapter seam, file-backed store, encrypted
-    // private-key vault). Resolved to the sibling repository via the composite
-    // in settings.gradle; no published artifact required.
-    implementation 'com.samvaad:e2ee-client:0.1.0'
+    // private-key vault). Resolved from Maven Central as the published
+    // artifact `io.github.animesh0404:e2ee-client:0.1.0` (library tag
+    // `v0.1.0`); the temporary composite-build consumption is retired.
+    // No authentication is required: Maven Central resolves anonymously.
+    implementation 'io.github.animesh0404:e2ee-client:0.1.0'
     // Lanterna loads its native Windows terminal support reflectively via JNA, which
     // Lanterna does not declare as a (transitive) dependency. Declared explicitly so
     // DefaultTerminalFactory can initialize the native Windows terminal instead of

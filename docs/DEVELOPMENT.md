@@ -31,6 +31,23 @@ so no manual JVM flags are needed. Validated on Windows 11 + Temurin 25.0.4
 
 `./gradlew run` is useful for CLI/non-interactive behavior but is not the primary way to run the fullscreen shell.
 
+## E2EE client artifact (Maven Central)
+
+The TUI depends on the published artifact
+`implementation 'io.github.animesh0404:e2ee-client:0.1.0'` (library tag
+`v0.1.0`, source at `https://github.com/animesh0404/samvaad-e2ee-lib`),
+resolved from Maven Central through Gradle's `mavenCentral()`
+(ADR 0014). No additional repository configuration is required, and no
+`GITHUB_ACTOR` / `GITHUB_TOKEN` credentials are required for normal
+development builds. The temporary composite-build consumption
+(`includeBuild('../samvaad-e2ee-lib')`) and the interim GitHub Packages
+consumption are retired; no sibling checkout is required.
+
+The library is AGPL-3.0-only (as is its transitive
+`org.signal:libsignal-client:0.86.5` dependency); the corresponding
+source for the consumed artifact is the library repository at tag
+`v0.1.0`.
+
 ## TUI development
 
 Phase 3 established the Lanterna fullscreen shell. Phase 4 replaced preview data with server-backed conversation/message state. Phase 5 adds message sending and realtime delivery. Phase 6 adds exact user lookup and pending friend-request workflows. Phase 7 adds the authoritative Friends tab, start-chat workflow, automatic conversation discovery, and universal manual refresh.
