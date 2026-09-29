@@ -13,7 +13,7 @@ class TuiAppLogoutTest {
 
     private static TuiSession session(LogoutService logout) {
         return new TuiSession("alice", "http://localhost:8080", null, null, null, null, null,
-                null, null, null, logout);
+                null, null, null, null, logout);
     }
 
     @Test

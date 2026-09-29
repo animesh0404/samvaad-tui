@@ -57,9 +57,12 @@ class E2eeStartupInitializerTest {
         E2eeInitializer initializer = new E2eeStartupInitializer(io,
                 new E2eeDeviceApiClient(transport), new E2eeMessageApiClient(transport), dir);
 
-        E2eeMessageSender sender = initializer.initialize("http://localhost:8080", testAuth());
+        E2eeSetup setup = initializer.initialize("http://localhost:8080", testAuth());
 
+        assertNotNull(setup);
+        E2eeMessageSender sender = setup.sender();
         assertNotNull(sender);
+        assertNull(setup.inbox());
         E2eeSendException e = assertThrows(E2eeSendException.class,
                 () -> sender.send(UUID.randomUUID(), UUID.randomUUID(), "bob", "hi"));
         assertTrue(e.getMessage().contains("pending approval"));

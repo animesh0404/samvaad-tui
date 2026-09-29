@@ -110,7 +110,9 @@ public final class AppBootstrap {
         System.out.println("Session: " + auth.sessionId());
         System.out.println("Authenticated: yes (expires in " + auth.expiresInSeconds() + " seconds)");
 
-        E2eeMessageSender e2eeSender = e2ee.initialize(config.serverUrl(), auth);
+        E2eeSetup e2eeSetup = e2ee.initialize(config.serverUrl(), auth);
+        E2eeMessageSender e2eeSender = e2eeSetup == null ? null : e2eeSetup.sender();
+        E2eeInboxProcessor e2eeInbox = e2eeSetup == null ? null : e2eeSetup.inbox();
 
         List<ConversationEntry> entries;
         try {
@@ -142,7 +144,7 @@ public final class AppBootstrap {
         AtomicBoolean explicitLogout = new AtomicBoolean(false);
         TuiSession tuiSession =
                 new TuiSession(config.username(), config.serverUrl(), store, history, realtime,
-                        friendStore, friends, friendList, conversationLoader, e2eeSender,
+                        friendStore, friends, friendList, conversationLoader, e2eeSender, e2eeInbox,
                         logoutService(config.serverUrl(), auth.accessToken(), explicitLogout));
         int tuiExit = 0;
         try {

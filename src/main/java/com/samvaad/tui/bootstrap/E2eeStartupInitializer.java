@@ -30,7 +30,7 @@ public final class E2eeStartupInitializer implements E2eeInitializer {
     }
 
     @Override
-    public E2eeMessageSender initialize(String serverUrl, AuthSession auth) {
+    public E2eeSetup initialize(String serverUrl, AuthSession auth) {
         E2eeRuntime runtime;
         try {
             runtime = E2eeRuntimeFactory.initializeInteractive(e2eeDir, io);
@@ -58,14 +58,17 @@ public final class E2eeStartupInitializer implements E2eeInitializer {
         if (enrolled.state() == E2eeEnrollmentState.ACTIVE && enrolled.sessionBound()) {
             System.out.println(
                     "E2EE ready (device " + enrolled.serverDeviceId() + "). Ctrl+E sends encrypted.");
-            return E2eeMessageSender.ready(
-                    devices, messages, serverUrl, auth.accessToken(), runtime, enrolled.serverDeviceId());
+            return new E2eeSetup(
+                    E2eeMessageSender.ready(devices, messages, serverUrl, auth.accessToken(),
+                            runtime, enrolled.serverDeviceId()),
+                    E2eeInboxProcessor.ready(messages, serverUrl, auth.accessToken(), runtime));
         }
         String reason = enrolled.state() == E2eeEnrollmentState.PENDING_APPROVAL
                 ? "device pending approval by another device"
                 : "current session is not bound to the enrolled device";
         System.out.println("Warning: E2EE not ready (" + reason + "). Plaintext only.");
-        return E2eeMessageSender.disabled("E2EE not ready: " + reason + ".");
+        return new E2eeSetup(E2eeMessageSender.disabled("E2EE not ready: " + reason + "."),
+                null);
     }
 
     private static String safeMessage(RuntimeException e) {

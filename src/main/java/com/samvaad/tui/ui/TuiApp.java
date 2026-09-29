@@ -40,6 +40,14 @@ public final class TuiApp implements TuiLauncher {
     static final int POLL_MILLIS = 50;
     static final long REQUEST_REFRESH_MILLIS = 30_000;
     static final long CONVERSATION_REFRESH_MILLIS = 5_000;
+    /**
+     * Ciphertext mailbox poll interval. Same conservative class as the
+     * conversation-discovery tick above: mailbox retrieval is
+     * discovery-only HTTP polling (there is no STOMP delivery of
+     * ciphertext), so it shares the 5-second cadence rather than
+     * inventing its own scheduler.
+     */
+    static final long E2EE_MAILBOX_REFRESH_MILLIS = 5_000;
 
     private final TuiController controller = new TuiController();
     private final TuiRenderer renderer = new TuiRenderer();
@@ -49,6 +57,8 @@ public final class TuiApp implements TuiLauncher {
     private volatile boolean friendsRefreshing;
     private volatile boolean conversationsRefreshing;
     private volatile long lastConversationRefresh;
+    private volatile boolean e2eeMailboxRefreshing;
+    private volatile long lastE2eeMailboxRefresh;
 
     public TuiApp() {
         this(System::currentTimeMillis);
@@ -104,6 +114,7 @@ public final class TuiApp implements TuiLauncher {
             reconcilePendingSend(session.store(), state);
             maybeRefreshRequests(session, state);
             maybeRefreshConversations(session, state);
+            maybePollE2eeMailbox(session, state);
             renderer.render(screen, state, session.store(), session.username(), session.serverUrl(),
                     session.friendStore(), session.friendList());
             screen.refresh();
@@ -733,6 +744,54 @@ public final class TuiApp implements TuiLauncher {
                 conversationsRefreshing = false;
             }
         }, "samvaad-conversations-refresh");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    /**
+     * Periodic ciphertext-mailbox discovery tick. Runs at most every
+     * {@link #E2EE_MAILBOX_REFRESH_MILLIS} and only while this session
+     * has a bound E2EE inbox; the guarded worker below does the HTTP.
+     * Independent of STOMP delivery: ciphertext never arrives over the
+     * realtime path, so this tick is the only inbound E2EE trigger.
+     */
+    void maybePollE2eeMailbox(TuiSession session, TuiState state) {
+        if (session.e2eeInbox() == null || e2eeMailboxRefreshing) {
+            return;
+        }
+        if (isRefreshDue(lastE2eeMailboxRefresh, clock.getAsLong(),
+                E2EE_MAILBOX_REFRESH_MILLIS)) {
+            pollE2eeMailbox(session, state);
+        }
+    }
+
+    /**
+     * Fetches pending mailbox envelopes and processes them through the
+     * single inbound boundary ({@code E2eeInboxProcessor}), which owns
+     * decrypt, payload decode, store merge, and acknowledgement. Runs on
+     * a guarded daemon worker like the other refresh paths: overlapping
+     * polls are prevented, and a failed poll preserves everything and
+     * stays silent (the next tick retries). Per-envelope failures never
+     * abort the pass and never touch plaintext behavior.
+     */
+    void pollE2eeMailbox(TuiSession session, TuiState state) {
+        if (session.e2eeInbox() == null || e2eeMailboxRefreshing) {
+            return;
+        }
+        e2eeMailboxRefreshing = true;
+        lastE2eeMailboxRefresh = clock.getAsLong();
+        ConversationStore store = session.store();
+        Thread worker = new Thread(() -> {
+            try {
+                session.e2eeInbox().process(store);
+            } catch (RuntimeException ignored) {
+                // Background poll: failed envelopes stay pending server-side
+                // and the next tick retries; no status noise, no plaintext
+                // fallback, no UI impact.
+            } finally {
+                e2eeMailboxRefreshing = false;
+            }
+        }, "samvaad-e2ee-mailbox");
         worker.setDaemon(true);
         worker.start();
     }

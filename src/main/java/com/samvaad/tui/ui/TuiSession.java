@@ -1,5 +1,6 @@
 package com.samvaad.tui.ui;
 
+import com.samvaad.tui.bootstrap.E2eeInboxProcessor;
 import com.samvaad.tui.bootstrap.E2eeMessageSender;
 import com.samvaad.tui.model.ConversationStore;
 import com.samvaad.tui.model.FriendRequestStore;
@@ -16,6 +17,11 @@ import com.samvaad.tui.realtime.RealtimeManager;
  * <p>The optional E2EE sender (null when E2EE was unavailable this
  * session) offers encrypted direct messaging alongside — never instead
  * of — the plaintext realtime path.
+ *
+ * <p>The optional E2EE inbox processor (null unless this session freshly
+ * enrolled and bound its device) polls the ciphertext mailbox
+ * independently of STOMP delivery and merges decrypted messages through
+ * the same authoritative store path as realtime broadcasts.
  *
  * <p>The optional logout service (null in flows without authentication,
  * e.g. some tests) revokes the server session on explicit user request.
@@ -34,5 +40,6 @@ public record TuiSession(
         FriendStore friendList,
         ConversationListLoader conversationLoader,
         E2eeMessageSender e2eeSender,
+        E2eeInboxProcessor e2eeInbox,
         LogoutService logout) {
 }
