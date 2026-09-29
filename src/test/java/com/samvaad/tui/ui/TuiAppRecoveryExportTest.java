@@ -173,7 +173,7 @@ class TuiAppRecoveryExportTest {
         await(() -> !state.recoveryExportVisible(), "export completion");
         assertEquals(STAGED, Files.readString(destination, StandardCharsets.UTF_8));
         assertFalse(Files.exists(staged));
-        assertEquals("Recovery codes saved.", state.status());
+        assertEquals("Recovery codes saved to: " + destination + ".", state.status());
     }
 
     @Test
@@ -233,6 +233,31 @@ class TuiAppRecoveryExportTest {
                     "panel notice is visible");
             assertTrue(text.contains("alpha-code-1"), "codes render inside Lanterna");
             assertTrue(text.contains("Save to: /tmp/codes.txt"), "path input renders");
+        } finally {
+            screen.stopScreen();
+        }
+    }
+
+    @Test
+    void manyCodesRenderInTwoColumns() throws IOException {
+        java.util.List<String> codes = new java.util.ArrayList<>();
+        for (int i = 0; i < 25; i++) {
+            codes.add(String.format("code-%02d", i));
+        }
+        ConversationStore store = new ConversationStore(ME, List.of());
+        TuiState state = new TuiState();
+        state.enterRecoveryExport(codes);
+        Screen screen = new TerminalScreen(new DefaultVirtualTerminal(new TerminalSize(100, 40)));
+        screen.startScreen();
+        try {
+            new TuiRenderer().render(screen, state, store, "alice", "http://localhost:8080");
+            screen.refresh();
+
+            String text = screenText(screen, 100, 40);
+            assertTrue(text.contains("code-00") && text.contains("code-24"), "all codes render");
+            boolean paired = text.lines()
+                    .anyMatch(line -> line.contains("code-00") && line.contains("code-13"));
+            assertTrue(paired, "many codes share rows in two columns");
         } finally {
             screen.stopScreen();
         }

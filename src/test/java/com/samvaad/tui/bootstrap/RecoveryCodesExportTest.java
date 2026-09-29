@@ -153,4 +153,20 @@ class RecoveryCodesExportTest {
         assertTrue(text.isEmpty(), "export must not print");
         assertFalse(text.contains("alpha-code-1"));
     }
+
+    @Test
+    void readsOnlyCodeLines(@TempDir Path dir) throws Exception {
+        stage(dir);
+
+        assertEquals(List.of("alpha-code-1", "alpha-code-2"), exportOf(dir).readCodes());
+    }
+
+    @Test
+    void exportReturnsResolvedDestination(@TempDir Path dir, @TempDir Path dest)
+            throws Exception {
+        stage(dir);
+        Path destination = dest.resolve("resolved.txt");
+
+        assertEquals(destination, exportOf(dir).exportTo(destination));
+    }
 }

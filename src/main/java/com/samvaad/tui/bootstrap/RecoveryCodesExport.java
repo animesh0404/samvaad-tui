@@ -8,6 +8,8 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -41,6 +43,29 @@ public final class RecoveryCodesExport {
     }
 
     /**
+     * Reads only the code lines for in-UI display: the staged format ends
+     * with one code per line, so the trailing non-blank block is the
+     * code set. Header wording above it may evolve without affecting
+     * this.
+     *
+     * @throws E2eeException when no pending export exists or cannot be read
+     */
+    public List<String> readCodes() {
+        List<String> lines = readStagedLines();
+        List<String> codes = new ArrayList<>();
+        int i = lines.size() - 1;
+        while (i >= 0 && lines.get(i).isBlank()) {
+            i--;
+        }
+        while (i >= 0 && !lines.get(i).isBlank()) {
+            codes.add(lines.get(i));
+            i--;
+        }
+        Collections.reverse(codes);
+        return List.copyOf(codes);
+    }
+
+    /**
      * Reads the staged content for in-UI display. The returned lines are
      * the staged file verbatim (header plus codes); no second
      * representation is generated.
@@ -71,8 +96,9 @@ public final class RecoveryCodesExport {
      *
      * @throws E2eeException with a path-only message on any failure; the
      *         staging file is left intact
+     * @return the resolved destination the codes were written to
      */
-    public void exportTo(Path destination) {
+    public Path exportTo(Path destination) {
         Objects.requireNonNull(destination, "destination");
         Path target = destination.isAbsolute()
                 ? destination.normalize()
@@ -114,6 +140,7 @@ public final class RecoveryCodesExport {
                 throw new E2eeException("Recovery-code export verification failed: " + target);
             }
             Files.delete(stagingFile);
+            return target;
         } catch (NoSuchFileException e) {
             throw new E2eeException("Recovery-code export verification failed: " + target, e);
         } catch (IOException e) {

@@ -22,6 +22,7 @@ import com.samvaad.tui.model.MessageEntry;
 import com.samvaad.tui.model.UserLookupEntry;
 import com.samvaad.tui.realtime.RealtimeException;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.UUID;
@@ -816,13 +817,13 @@ public final class TuiApp implements TuiLauncher {
         if (export == null || !export.hasPending()) {
             return;
         }
-        List<String> staged;
+        List<String> codes;
         try {
-            staged = export.readStagedLines();
+            codes = export.readCodes();
         } catch (RuntimeException ignored) {
             return;
         }
-        state.enterRecoveryExport(staged);
+        state.enterRecoveryExport(codes);
     }
 
     /**
@@ -844,9 +845,9 @@ public final class TuiApp implements TuiLauncher {
         }
         Thread worker = new Thread(() -> {
             try {
-                export.exportTo(Paths.get(input));
+                Path saved = export.exportTo(Paths.get(input));
                 state.closeRecoveryExport();
-                state.setStatus("Recovery codes saved.");
+                state.setStatus("Recovery codes saved to: " + saved + ".");
             } catch (RuntimeException e) {
                 String message = e.getMessage();
                 state.setRecoveryExportError(

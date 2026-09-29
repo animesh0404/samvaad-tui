@@ -452,21 +452,18 @@ public final class TuiRenderer {
 
     /**
      * First-enrollment recovery-code export panel. Centered modal box
-     * reusing the help-overlay layout: notice text, the staged codes for
-     * transcription, the destination path input, and a panel-local error
+     * reusing the help-overlay layout: notice text, the codes in one or
+     * two columns (two columns once the list would otherwise dominate
+     * the terminal), the destination path input, and a panel-local error
      * area. Rendered entirely inside Lanterna; nothing here reaches
      * stdout, logs, or the status line.
      */
     private void drawRecoveryExport(TuiState state, TextGraphics tg, int cols, int rows) {
         List<String> lines = new ArrayList<>();
         lines.add("Your Samvaad recovery codes have been generated.");
+        lines.add("Save them somewhere secure — they are single-use.");
         lines.add("");
-        lines.add("These are single-use recovery credentials. They are");
-        lines.add("needed to recover this device/session if necessary.");
-        lines.add("A temporary recovery-code file is waiting to be saved.");
-        lines.add("Save it somewhere secure, then keep it safe.");
-        lines.add("");
-        lines.addAll(state.recoveryExportLines());
+        lines.addAll(codeRows(state.recoveryExportLines()));
         lines.add("");
         lines.add("Save to: " + state.recoveryPathInput());
         if (!state.recoveryExportError().isEmpty()) {
@@ -485,6 +482,29 @@ public final class TuiRenderer {
             tg.putString(left + 1 + HELP_HORIZONTAL_PADDING, top + 1 + verticalPadding + i,
                     truncate(lines.get(i), width - 2 - HELP_HORIZONTAL_PADDING * 2));
         }
+    }
+
+    /**
+     * Lays recovery codes in one column, or two side-by-side columns
+     * once a single column would dominate the terminal. Order is
+     * preserved down each column.
+     */
+    private static List<String> codeRows(List<String> codes) {
+        if (codes.size() <= 12) {
+            return codes;
+        }
+        int half = (codes.size() + 1) / 2;
+        int width = codes.stream().mapToInt(String::length).max().orElse(0);
+        List<String> rows = new ArrayList<>(half);
+        for (int i = 0; i < half; i++) {
+            String left = codes.get(i);
+            if (i + half >= codes.size()) {
+                rows.add(left);
+            } else {
+                rows.add(left + " ".repeat(width - left.length() + 3) + codes.get(i + half));
+            }
+        }
+        return rows;
     }
 
     private void drawBox(TextGraphics tg, int left, int top, int width, int height, String title,

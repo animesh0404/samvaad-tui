@@ -202,11 +202,11 @@ public final class TuiState {
     }
 
     /**
-     * Opens the export panel with the staged content lines to display.
+     * Opens the export panel with the recovery codes to display.
      * Content lives in memory only for display; it is never logged.
      */
-    public void enterRecoveryExport(List<String> stagedLines) {
-        recoveryExportLines = List.copyOf(stagedLines);
+    public void enterRecoveryExport(List<String> codes) {
+        recoveryExportLines = List.copyOf(codes);
         recoveryPathInput = "";
         recoveryExportError = "";
         recoveryExportVisible = true;
