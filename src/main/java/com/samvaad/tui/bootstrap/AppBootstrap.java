@@ -157,16 +157,13 @@ public final class AppBootstrap {
         } finally {
             realtime.disconnect();
         }
-        try {
-            if (!explicitLogout.get()) {
-                authApi.logout(config.serverUrl(), auth.accessToken());
-                System.out.println("Logged out. Server session revoked.");
-            }
-        } catch (SamvaadApiException e) {
-            System.err.println("Warning: logout failed (" + e.getMessage() + "). Local session cleared.");
-        } finally {
-            session = session.cleared();
-        }
+        // Normal termination never revokes the server session: quitting
+        // the TUI (q/F10/Ctrl+C) or a UI failure leaves the authenticated
+        // session intact for offline mailbox delivery and later reuse.
+        // Only an explicit in-TUI logout revokes, exactly once, through
+        // the logout service above. Local in-memory secrets are dropped
+        // either way.
+        session = session.cleared();
         return tuiExit;
     }
 

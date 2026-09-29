@@ -59,7 +59,7 @@ class AppBootstrapTest {
     }
 
     @Test
-    void loginListAndLogoutFlowReturnsZero() {
+    void normalQuitKeepsServerSession() {
         FakeConsoleIO io = new FakeConsoleIO();
         io.setPassword("s3cret".toCharArray());
         FakeHttpTransport transport = new FakeHttpTransport();
@@ -69,10 +69,12 @@ class AppBootstrapTest {
                 new CliOptions("http://localhost:8080", "alice"));
 
         assertEquals(0, exit);
-        assertEquals(3, transport.calls().size());
+        assertEquals(2, transport.calls().size());
         assertEquals("/api/auth/login", transport.calls().get(0).path());
         assertEquals("/api/conversations/direct?limit=20&offset=0", transport.calls().get(1).path());
-        assertEquals("/api/auth/logout", transport.calls().get(2).path());
+        assertTrue(transport.calls().stream()
+                .noneMatch(c -> c.path().equals("/api/auth/logout")),
+                "normal quit must not revoke the server session");
     }
 
     @Test
@@ -110,7 +112,10 @@ class AppBootstrapTest {
 
         assertEquals(0, exit);
         assertTrue(tui.session.store().conversations().isEmpty());
-        assertEquals("/api/auth/logout", transport.calls().get(2).path());
+        assertEquals(2, transport.calls().size());
+        assertTrue(transport.calls().stream()
+                .noneMatch(c -> c.path().equals("/api/auth/logout")),
+                "normal quit must not revoke the server session");
     }
 
     @Test
@@ -199,22 +204,7 @@ class AppBootstrapTest {
     }
 
     @Test
-    void logoutFailureStillExitsZero() {
-        FakeConsoleIO io = new FakeConsoleIO();
-        io.setPassword("s3cret".toCharArray());
-        FakeHttpTransport transport = new FakeHttpTransport();
-        transport.addJson(200, AUTH_JSON);
-        transport.addJson(200, LIST_JSON);
-        transport.addJson(500, "boom");
-
-        int exit = bootstrap(io, transport, new FakeRealtimeClient(), (session) -> { }).run(
-                new CliOptions("http://localhost:8080", "alice"));
-
-        assertEquals(0, exit);
-    }
-
-    @Test
-    void tuiFailureStillLogsOutAndReturnsOne() {
+    void tuiFailureKeepsSessionAndReturnsOne() {
         FakeConsoleIO io = new FakeConsoleIO();
         io.setPassword("s3cret".toCharArray());
         FakeHttpTransport transport = new FakeHttpTransport();
@@ -225,8 +215,10 @@ class AppBootstrapTest {
         }).run(new CliOptions("http://localhost:8080", "alice"));
 
         assertEquals(1, exit);
-        assertEquals(3, transport.calls().size(), "logout must still revoke the server session");
-        assertEquals("/api/auth/logout", transport.calls().get(2).path());
+        assertEquals(2, transport.calls().size());
+        assertTrue(transport.calls().stream()
+                .noneMatch(c -> c.path().equals("/api/auth/logout")),
+                "even a UI failure must not revoke the server session");
     }
 
     @Test
