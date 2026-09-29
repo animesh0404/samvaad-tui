@@ -156,7 +156,7 @@ class TuiAppE2eeMailboxTest {
                 realtimeClient, "http://localhost:8080", "token", store, history);
         return new TuiSession("alice", "http://localhost:8080", store, history, realtime,
                 new FriendRequestStore(), quietFriends(), new FriendStore(), () -> List.of(),
-                null, inbox, null);
+                null, inbox, null, null);
     }
 
     private static FriendService quietFriends() {

@@ -10,6 +10,7 @@ import com.googlecode.lanterna.terminal.ansi.UnixLikeTerminal;
 import com.samvaad.tui.api.SamvaadApiException;
 import com.samvaad.tui.bootstrap.E2eeMessageSender;
 import com.samvaad.tui.bootstrap.E2eeSendException;
+import com.samvaad.tui.bootstrap.RecoveryCodesExport;
 import com.samvaad.tui.model.ConversationEntry;
 import com.samvaad.tui.model.ConversationStore;
 import com.samvaad.tui.model.FirstMessage;
@@ -21,6 +22,7 @@ import com.samvaad.tui.model.MessageEntry;
 import com.samvaad.tui.model.UserLookupEntry;
 import com.samvaad.tui.realtime.RealtimeException;
 import java.io.IOException;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.LongSupplier;
@@ -115,6 +117,7 @@ public final class TuiApp implements TuiLauncher {
             maybeRefreshRequests(session, state);
             maybeRefreshConversations(session, state);
             maybePollE2eeMailbox(session, state);
+            maybeShowRecoveryExport(session, state);
             renderer.render(screen, state, session.store(), session.username(), session.serverUrl(),
                     session.friendStore(), session.friendList());
             screen.refresh();
@@ -144,6 +147,9 @@ public final class TuiApp implements TuiLauncher {
             }
             if (action == TuiController.Action.SEND_ENCRYPTED) {
                 sendEncrypted(session, state);
+            }
+            if (action == TuiController.Action.SAVE_RECOVERY_CODES) {
+                exportRecoveryCodes(session, state);
             }
             if (action == TuiController.Action.LOOKUP_USER) {
                 lookupUser(session, state);
@@ -792,6 +798,61 @@ public final class TuiApp implements TuiLauncher {
                 e2eeMailboxRefreshing = false;
             }
         }, "samvaad-e2ee-mailbox");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    /**
+     * Opens the first-enrollment recovery-code export panel once per
+     * launch while a staged export is pending. The panel is modal from
+     * the first tick so the codes are offered before normal chat use;
+     * closing it (save later) keeps staging intact for the next launch.
+     */
+    void maybeShowRecoveryExport(TuiSession session, TuiState state) {
+        if (state.recoveryExportVisible() || state.recoveryExportDismissed()) {
+            return;
+        }
+        RecoveryCodesExport export = session.recoveryExport();
+        if (export == null || !export.hasPending()) {
+            return;
+        }
+        List<String> staged;
+        try {
+            staged = export.readStagedLines();
+        } catch (RuntimeException ignored) {
+            return;
+        }
+        state.enterRecoveryExport(staged);
+    }
+
+    /**
+     * Exports the staged recovery codes to the user-entered destination
+     * on a daemon worker. Success closes the panel with a confirmation;
+     * failure keeps staging intact and surfaces a path-only error inside
+     * the panel. Never touches stdout, logs, or the composer.
+     */
+    void exportRecoveryCodes(TuiSession session, TuiState state) {
+        RecoveryCodesExport export = session.recoveryExport();
+        if (export == null) {
+            state.closeRecoveryExport();
+            return;
+        }
+        String input = state.recoveryPathInput().trim();
+        if (input.isEmpty()) {
+            state.setRecoveryExportError("Enter a destination path.");
+            return;
+        }
+        Thread worker = new Thread(() -> {
+            try {
+                export.exportTo(Paths.get(input));
+                state.closeRecoveryExport();
+                state.setStatus("Recovery codes saved.");
+            } catch (RuntimeException e) {
+                String message = e.getMessage();
+                state.setRecoveryExportError(
+                        message == null || message.isBlank() ? "Export failed." : message);
+            }
+        }, "samvaad-recovery-export");
         worker.setDaemon(true);
         worker.start();
     }

@@ -113,6 +113,7 @@ public final class AppBootstrap {
         E2eeSetup e2eeSetup = e2ee.initialize(config.serverUrl(), auth);
         E2eeMessageSender e2eeSender = e2eeSetup == null ? null : e2eeSetup.sender();
         E2eeInboxProcessor e2eeInbox = e2eeSetup == null ? null : e2eeSetup.inbox();
+        RecoveryCodesExport recoveryExport = e2eeSetup == null ? null : e2eeSetup.recoveryExport();
 
         List<ConversationEntry> entries;
         try {
@@ -145,6 +146,7 @@ public final class AppBootstrap {
         TuiSession tuiSession =
                 new TuiSession(config.username(), config.serverUrl(), store, history, realtime,
                         friendStore, friends, friendList, conversationLoader, e2eeSender, e2eeInbox,
+                        recoveryExport,
                         logoutService(config.serverUrl(), auth.accessToken(), explicitLogout));
         int tuiExit = 0;
         try {

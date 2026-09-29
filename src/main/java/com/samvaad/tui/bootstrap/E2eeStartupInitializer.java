@@ -67,14 +67,25 @@ public final class E2eeStartupInitializer implements E2eeInitializer {
             return new E2eeSetup(
                     E2eeMessageSender.ready(devices, messages, serverUrl, auth.accessToken(),
                             runtime, enrolled.serverDeviceId()),
-                    E2eeInboxProcessor.ready(messages, serverUrl, auth.accessToken(), runtime));
+                    E2eeInboxProcessor.ready(messages, serverUrl, auth.accessToken(), runtime),
+                    pendingExportOrNull());
         }
         String reason = enrolled.state() == E2eeEnrollmentState.PENDING_APPROVAL
                 ? "device pending approval by another device"
                 : "current session is not bound to the enrolled device";
         System.out.println("Warning: E2EE not ready (" + reason + "). Plaintext only.");
         return new E2eeSetup(E2eeMessageSender.disabled("E2EE not ready: " + reason + "."),
-                null);
+                null, pendingExportOrNull());
+    }
+
+    /**
+     * Pending first-enrollment export for this launch, if a staged file
+     * exists (fresh enrollment staged it moments ago, or an earlier
+     * launch left it unexported). Never creates anything here.
+     */
+    private RecoveryCodesExport pendingExportOrNull() {
+        RecoveryCodesExport export = new RecoveryCodesExport(e2eeDir);
+        return export.hasPending() ? export : null;
     }
 
     private static String safeMessage(RuntimeException e) {

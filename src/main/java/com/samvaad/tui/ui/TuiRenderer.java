@@ -15,6 +15,7 @@ import com.samvaad.tui.model.FriendStore;
 import com.samvaad.tui.model.MessageEntry;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -83,6 +84,9 @@ public final class TuiRenderer {
         drawStatus(tg, state, cols, rows - 1);
         if (state.helpVisible()) {
             drawHelp(tg, cols, rows);
+        }
+        if (state.recoveryExportVisible()) {
+            drawRecoveryExport(state, tg, cols, rows);
         }
     }
 
@@ -440,6 +444,43 @@ public final class TuiRenderer {
         int left = Math.max(0, (cols - width) / 2);
         int top = Math.max(0, (rows - height) / 2);
         drawBox(tg, left, top, width, height, " Help ", false);
+        for (int i = 0; i < lines.size(); i++) {
+            tg.putString(left + 1 + HELP_HORIZONTAL_PADDING, top + 1 + verticalPadding + i,
+                    truncate(lines.get(i), width - 2 - HELP_HORIZONTAL_PADDING * 2));
+        }
+    }
+
+    /**
+     * First-enrollment recovery-code export panel. Centered modal box
+     * reusing the help-overlay layout: notice text, the staged codes for
+     * transcription, the destination path input, and a panel-local error
+     * area. Rendered entirely inside Lanterna; nothing here reaches
+     * stdout, logs, or the status line.
+     */
+    private void drawRecoveryExport(TuiState state, TextGraphics tg, int cols, int rows) {
+        List<String> lines = new ArrayList<>();
+        lines.add("Your Samvaad recovery codes have been generated.");
+        lines.add("");
+        lines.add("These are single-use recovery credentials. They are");
+        lines.add("needed to recover this device/session if necessary.");
+        lines.add("A temporary recovery-code file is waiting to be saved.");
+        lines.add("Save it somewhere secure, then keep it safe.");
+        lines.add("");
+        lines.addAll(state.recoveryExportLines());
+        lines.add("");
+        lines.add("Save to: " + state.recoveryPathInput());
+        if (!state.recoveryExportError().isEmpty()) {
+            lines.add("Error: " + state.recoveryExportError());
+        }
+        lines.add("");
+        lines.add("Enter save   Esc save later");
+        int contentWidth = lines.stream().mapToInt(String::length).max().orElse(0);
+        int width = Math.min(cols - 2, contentWidth + HELP_HORIZONTAL_PADDING * 2 + 2);
+        int verticalPadding = rows >= lines.size() + 4 ? HELP_VERTICAL_PADDING : 0;
+        int height = lines.size() + 2 + verticalPadding * 2;
+        int left = Math.max(0, (cols - width) / 2);
+        int top = Math.max(0, (rows - height) / 2);
+        drawBox(tg, left, top, width, height, " Recovery codes ", false);
         for (int i = 0; i < lines.size(); i++) {
             tg.putString(left + 1 + HELP_HORIZONTAL_PADDING, top + 1 + verticalPadding + i,
                     truncate(lines.get(i), width - 2 - HELP_HORIZONTAL_PADDING * 2));

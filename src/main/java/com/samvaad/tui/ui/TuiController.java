@@ -33,6 +33,10 @@ import java.util.List;
  * <p>F5 is the universal manual refresh: it refreshes the authoritative
  * data for the active view (conversations, friends, search lookup, or
  * the displayed request list) through that view's existing mechanism.
+ *
+ * <p>Recovery export: while the first-enrollment recovery-code panel is
+ * open it is modal — typing edits the destination path, Enter saves,
+ * Esc saves later, F10/Ctrl+C still quit, and nothing reaches chat.
  */
 public final class TuiController {
 
@@ -51,7 +55,8 @@ public final class TuiController {
         REFRESH_FRIENDS,
         REFRESH_CONVERSATIONS,
         SELECT_FRIEND,
-        SEND_FIRST_MESSAGE
+        SEND_FIRST_MESSAGE,
+        SAVE_RECOVERY_CODES
     }
 
     public Action handle(KeyStroke key, TuiState state, List<ConversationEntry> conversations) {
@@ -67,6 +72,9 @@ public final class TuiController {
             int incomingCount, int outgoingCount, int friendCount) {
         if (key == null) {
             return Action.CONTINUE;
+        }
+        if (state.recoveryExportVisible()) {
+            return handleRecoveryExportKeys(key, state);
         }
         if (state.helpVisible()) {
             if (key.getKeyType() == KeyType.F10) {
@@ -117,6 +125,40 @@ public final class TuiController {
             return handleConversationKeys(key, state, conversations, friendCount);
         }
         return handleComposerKeys(key, state);
+    }
+
+    /**
+     * First-enrollment recovery-code export panel. Modal: every keystroke
+     * is captured here so nothing reaches the chat composer while the
+     * panel is open. F10/Ctrl+C still quit; Esc saves later (closes
+     * without exporting); Enter attempts the export; typing edits the
+     * destination path; everything else is swallowed.
+     */
+    private Action handleRecoveryExportKeys(KeyStroke key, TuiState state) {
+        if (key.getKeyType() == KeyType.F10 || isCtrlC(key)) {
+            return Action.QUIT;
+        }
+        if (key.getKeyType() == KeyType.Escape) {
+            state.closeRecoveryExport();
+            return Action.CONTINUE;
+        }
+        if (key.getKeyType() == KeyType.Enter) {
+            return Action.SAVE_RECOVERY_CODES;
+        }
+        if (key.getKeyType() == KeyType.Backspace) {
+            state.backspaceRecoveryPath();
+            state.setRecoveryExportError("");
+            return Action.CONTINUE;
+        }
+        if (key.getKeyType() == KeyType.Character && !key.isCtrlDown() && !key.isAltDown()) {
+            Character c = key.getCharacter();
+            if (c != null && !Character.isISOControl(c)) {
+                state.appendToRecoveryPath(c);
+                state.setRecoveryExportError("");
+            }
+            return Action.CONTINUE;
+        }
+        return Action.CONTINUE;
     }
 
     /**

@@ -106,7 +106,7 @@ class TuiAppFirstMessageTest {
         RealtimeManager realtime = new RealtimeManager(
                 new FakeRealtimeClient(), "http://localhost:8080", "token", store, history);
         return new TuiSession("alice", "http://localhost:8080", store, history, realtime,
-                new FriendRequestStore(), friends, new FriendStore(), conversations, null, null,
+                new FriendRequestStore(), friends, new FriendStore(), conversations, null, null, null,
                 null);
     }
 

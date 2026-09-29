@@ -2,6 +2,7 @@ package com.samvaad.tui.ui;
 
 import com.samvaad.tui.bootstrap.E2eeInboxProcessor;
 import com.samvaad.tui.bootstrap.E2eeMessageSender;
+import com.samvaad.tui.bootstrap.RecoveryCodesExport;
 import com.samvaad.tui.model.ConversationStore;
 import com.samvaad.tui.model.FriendRequestStore;
 import com.samvaad.tui.model.FriendStore;
@@ -23,6 +24,10 @@ import com.samvaad.tui.realtime.RealtimeManager;
  * independently of STOMP delivery and merges decrypted messages through
  * the same authoritative store path as realtime broadcasts.
  *
+ * <p>The optional recovery-code export (null unless a first-enrollment
+ * staging file is pending) offers the one-time save flow inside the UI.
+ * It carries no codes itself — only the staging-file capability.
+ *
  * <p>The optional logout service (null in flows without authentication,
  * e.g. some tests) revokes the server session on explicit user request.
  * A successful explicit logout suppresses the shutdown auto-logout, so
@@ -41,5 +46,6 @@ public record TuiSession(
         ConversationListLoader conversationLoader,
         E2eeMessageSender e2eeSender,
         E2eeInboxProcessor e2eeInbox,
+        RecoveryCodesExport recoveryExport,
         LogoutService logout) {
 }

@@ -1,5 +1,6 @@
 package com.samvaad.tui.ui;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -60,6 +61,7 @@ public final class TuiState {
 
     static final int MAX_COMPOSER_LENGTH = 200;
     static final int MAX_SEARCH_LENGTH = 32;
+    static final int MAX_RECOVERY_PATH_LENGTH = 256;
 
     private Focus focus = Focus.CONVERSATIONS;
     private int selectedIndex;
@@ -76,6 +78,11 @@ public final class TuiState {
     private SidebarTab sidebarTab = SidebarTab.CONVERSATIONS;
     private int friendSelectedIndex;
     private PendingChat pendingNewChat;
+    private boolean recoveryExportVisible;
+    private boolean recoveryExportDismissed;
+    private String recoveryPathInput = "";
+    private String recoveryExportError = "";
+    private List<String> recoveryExportLines = List.of();
 
     public Focus focus() {
         return focus;
@@ -174,6 +181,84 @@ public final class TuiState {
 
     public void toggleHelp() {
         helpVisible = !helpVisible;
+    }
+
+    /**
+     * Whether the first-enrollment recovery-code export panel is open.
+     * While open it captures all keyboard input so keystrokes never
+     * reach the chat composer.
+     */
+    public boolean recoveryExportVisible() {
+        return recoveryExportVisible;
+    }
+
+    /**
+     * Whether the panel was closed without exporting (save later).
+     * Guards the auto-open tick so a dismissed panel stays closed until
+     * the next launch.
+     */
+    public boolean recoveryExportDismissed() {
+        return recoveryExportDismissed;
+    }
+
+    /**
+     * Opens the export panel with the staged content lines to display.
+     * Content lives in memory only for display; it is never logged.
+     */
+    public void enterRecoveryExport(List<String> stagedLines) {
+        recoveryExportLines = List.copyOf(stagedLines);
+        recoveryPathInput = "";
+        recoveryExportError = "";
+        recoveryExportVisible = true;
+    }
+
+    /**
+     * Closes the panel (save later): staging is untouched, and the panel
+     * is not reopened this launch.
+     */
+    public void closeRecoveryExport() {
+        recoveryExportVisible = false;
+        recoveryExportDismissed = true;
+    }
+
+    /**
+     * Staged content lines shown inside the panel.
+     */
+    public List<String> recoveryExportLines() {
+        return recoveryExportLines;
+    }
+
+    public String recoveryPathInput() {
+        return recoveryPathInput;
+    }
+
+    public void appendToRecoveryPath(char c) {
+        if (recoveryPathInput.length() < MAX_RECOVERY_PATH_LENGTH) {
+            recoveryPathInput += c;
+        }
+    }
+
+    public void backspaceRecoveryPath() {
+        if (!recoveryPathInput.isEmpty()) {
+            recoveryPathInput = recoveryPathInput.substring(0, recoveryPathInput.length() - 1);
+        }
+    }
+
+    public void clearRecoveryPath() {
+        recoveryPathInput = "";
+        recoveryExportError = "";
+    }
+
+    /**
+     * Panel-local export failure text. Never carries code values; only
+     * paths and failure reasons.
+     */
+    public String recoveryExportError() {
+        return recoveryExportError;
+    }
+
+    public void setRecoveryExportError(String message) {
+        recoveryExportError = message == null ? "" : message;
     }
 
     public void closeHelp() {
