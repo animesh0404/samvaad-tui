@@ -55,6 +55,16 @@ public final class ConsolePrompter {
         return io.readPassword("E2EE vault password: ");
     }
 
+    /**
+     * Prompts once for a single recovery code to rebind an adopted
+     * device. Hidden input like passwords; blank means "skip recovery
+     * for now". Single attempt only — no retry loop. The caller zeroes
+     * the array after use and never logs it.
+     */
+    public char[] promptRecoveryCode() {
+        return io.readPassword("Recovery code (Enter to skip): ");
+    }
+
     private static boolean isPresent(String value) {
         return value != null && !value.trim().isEmpty();
     }
