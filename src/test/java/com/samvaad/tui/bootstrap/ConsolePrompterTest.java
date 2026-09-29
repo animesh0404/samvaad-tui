@@ -47,6 +47,15 @@ class ConsolePrompterTest {
         io.setPassword("vault-pass".toCharArray());
         ConsolePrompter prompter = new ConsolePrompter(io);
         assertArrayEquals("vault-pass".toCharArray(), prompter.promptE2eeVaultPassword());
-        assertEquals("E2EE vault password: ", io.lastPasswordPrompt());
+        assertEquals("Enter E2EE vault password: ", io.lastPasswordPrompt());
+    }
+
+    @Test
+    void delegatesNewE2eeVaultPasswordPrompt() {
+        FakeConsoleIO io = new FakeConsoleIO();
+        io.setPassword("vault-pass".toCharArray());
+        ConsolePrompter prompter = new ConsolePrompter(io);
+        assertArrayEquals("vault-pass".toCharArray(), prompter.promptNewE2eeVaultPassword());
+        assertEquals("Create E2EE vault password: ", io.lastPasswordPrompt());
     }
 }

@@ -176,7 +176,23 @@ class E2eeRuntimeTest {
         io.setPassword(live);
         E2eeRuntime runtime = E2eeRuntimeFactory.initializeInteractive(dir, io);
         try {
-            assertEquals("E2EE vault password: ", io.lastPasswordPrompt());
+            assertEquals("Create E2EE vault password: ", io.lastPasswordPrompt());
+            assertFalse(runtime.fingerprint().isBlank());
+        } finally {
+            runtime.close();
+        }
+        assertZeroed(live);
+    }
+
+    @Test
+    void interactiveInitWithExistingVaultPromptsToEnter(@TempDir Path dir) {
+        E2eeRuntimeFactory.initialize(dir, vaultPassword()).close();
+        FakeConsoleIO io = new FakeConsoleIO();
+        char[] live = vaultPassword();
+        io.setPassword(live);
+        E2eeRuntime runtime = E2eeRuntimeFactory.initializeInteractive(dir, io);
+        try {
+            assertEquals("Enter E2EE vault password: ", io.lastPasswordPrompt());
             assertFalse(runtime.fingerprint().isBlank());
         } finally {
             runtime.close();

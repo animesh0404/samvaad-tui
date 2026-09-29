@@ -119,14 +119,21 @@ public final class E2eeRuntimeFactory {
     /**
      * Prompts for the vault password over {@code io} and opens the device.
      * Fails clearly when interactive entry is impossible; the password is
-     * zeroed after use either way.
+     * zeroed after use either way. The prompt distinguishes first-time
+     * creation from unlocking: an existing device record means a vault
+     * was already created, so its passphrase is requested; otherwise a
+     * new passphrase is created. Vault encryption and error handling are
+     * unchanged — only the prompt wording branches.
      */
     public static E2eeRuntime initializeInteractive(Path e2eeDir, ConsoleIO io) {
         Objects.requireNonNull(e2eeDir, "e2eeDir");
         Objects.requireNonNull(io, "io");
         char[] password;
         try {
-            password = new ConsolePrompter(io).promptE2eeVaultPassword();
+            boolean existing = Files.isRegularFile(e2eeDir.resolve(METADATA_FILE));
+            password = existing
+                    ? new ConsolePrompter(io).promptE2eeVaultPassword()
+                    : new ConsolePrompter(io).promptNewE2eeVaultPassword();
         } catch (RuntimeException e) {
             throw new E2eeException(
                     "E2EE vault requires interactive password entry and none was available.", e);

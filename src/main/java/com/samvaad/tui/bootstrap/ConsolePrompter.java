@@ -47,12 +47,21 @@ public final class ConsolePrompter {
     }
 
     /**
-     * Prompts for the E2EE vault passphrase. Like the login password, the
-     * value is never echoed when a real console is available and is never
-     * stored; the caller zeroes the array after use.
+     * Prompts to unlock an already-created E2EE vault. Like the login
+     * password, the value is never echoed when a real console is
+     * available and is never stored; the caller zeroes the array after use.
      */
     public char[] promptE2eeVaultPassword() {
-        return io.readPassword("E2EE vault password: ");
+        return io.readPassword("Enter E2EE vault password: ");
+    }
+
+    /**
+     * Prompts to create the E2EE vault passphrase on first-time vault
+     * initialization. Same hidden-input handling as
+     * {@link #promptE2eeVaultPassword}.
+     */
+    public char[] promptNewE2eeVaultPassword() {
+        return io.readPassword("Create E2EE vault password: ");
     }
 
     /**
