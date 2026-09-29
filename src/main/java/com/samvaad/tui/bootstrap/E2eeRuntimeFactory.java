@@ -17,11 +17,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
@@ -74,6 +77,17 @@ import java.util.stream.Stream;
 public final class E2eeRuntimeFactory {
 
     private static final String METADATA_FILE = "device.properties";
+
+    /**
+     * Staging file for first-device recovery codes, inside the E2EE data
+     * directory but separate from {@code device.properties} (which never
+     * stores recovery codes). Presence means "export pending": the Lanterna
+     * export flow consumes it and deletes it after a successful export.
+     */
+    static final String RECOVERY_CODES_STAGING_FILE = "recovery-codes.pending";
+
+    private static final Set<PosixFilePermission> OWNER_ONLY =
+            EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
     private static final int SIGNED_PREKEY_ID = 1;
     private static final int KYBER_PREKEY_ID = 1;
 
@@ -105,7 +119,7 @@ public final class E2eeRuntimeFactory {
     /**
      * Prompts for the vault password over {@code io} and opens the device.
      * Fails clearly when interactive entry is impossible; the password is
-     * never echoed by this layer (see {@link ConsoleIO#readPassword}).
+     * zeroed after use either way.
      */
     public static E2eeRuntime initializeInteractive(Path e2eeDir, ConsoleIO io) {
         Objects.requireNonNull(e2eeDir, "e2eeDir");
@@ -323,6 +337,99 @@ public final class E2eeRuntimeFactory {
      */
     record ServerBinding(UUID serverDeviceId, int signalDeviceId, E2eeEnrollmentState status,
             int otpkHighWaterMark, UUID boundSessionIdOrNull) {
+    }
+
+    /**
+     * Staging-file path for first-device recovery codes.
+     */
+    static Path recoveryCodesStagingFile(Path e2eeDir) {
+        Objects.requireNonNull(e2eeDir, "e2eeDir");
+        return e2eeDir.resolve(RECOVERY_CODES_STAGING_FILE);
+    }
+
+    /**
+     * Stages freshly issued first-device recovery codes for the later
+     * Lanterna export flow. Called only on fresh enrollment with a
+     * non-empty issued set; adoption, normal login, and restarts never
+     * reach here.
+     *
+     * <p>Fails closed: an existing staging file (pending export) is never
+     * overwritten, partial writes never land (temp file + atomic move),
+     * and every failure throws without exposing code values. Callers must
+     * degrade E2EE setup rather than print the codes anywhere.
+     */
+    static void stageRecoveryCodes(Path e2eeDir, List<String> codes) {
+        Objects.requireNonNull(e2eeDir, "e2eeDir");
+        Objects.requireNonNull(codes, "codes");
+        if (codes.isEmpty()) {
+            throw new E2eeException("No recovery codes to stage.");
+        }
+        for (String code : codes) {
+            if (code == null || code.isBlank()) {
+                throw new E2eeException("Cannot stage an incomplete recovery-code set.");
+            }
+        }
+        Path file = recoveryCodesStagingFile(e2eeDir);
+        if (Files.exists(file)) {
+            throw new E2eeException("A pending recovery-code export already exists: " + file);
+        }
+        try {
+            Files.createDirectories(e2eeDir);
+        } catch (IOException e) {
+            throw new E2eeException("Cannot stage recovery codes: " + file, e);
+        }
+        Path tmp = null;
+        try {
+            tmp = Files.createTempFile(e2eeDir, "recovery-codes", ".tmp");
+            restrict(tmp);
+        } catch (IOException e) {
+            throw new E2eeException("Cannot stage recovery codes: " + file, e);
+        }
+        try {
+            StringBuilder staged = new StringBuilder("Samvaad Recovery Codes\n");
+            staged.append("======================\n");
+            staged.append("\n");
+            staged.append("These codes are single-use recovery credentials.\n");
+            staged.append("Store this file securely. They are not regenerated automatically.\n");
+            staged.append("\n");
+            for (String code : codes) {
+                staged.append(code.trim()).append('\n');
+            }
+            Files.writeString(tmp, staged.toString(), StandardCharsets.UTF_8,
+                    StandardOpenOption.TRUNCATE_EXISTING);
+            try {
+                Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tmp, file);
+            }
+            restrict(file);
+        } catch (IOException e) {
+            throw new E2eeException("Cannot stage recovery codes: " + file, e);
+        } finally {
+            if (tmp != null) {
+                try {
+                    Files.deleteIfExists(tmp);
+                } catch (IOException ignored) {
+                    // Best effort: the temp name is unique and owner-restricted.
+                }
+            }
+        }
+    }
+
+    /**
+     * Owner-only file protection, mirroring the session credential store
+     * convention: POSIX 0600 where supported, no-op on non-POSIX
+     * platforms (e.g. Windows) whose profile directories already limit
+     * access.
+     */
+    private static void restrict(Path target) {
+        try {
+            Files.setPosixFilePermissions(target, OWNER_ONLY);
+        } catch (UnsupportedOperationException e) {
+            // Non-POSIX platform: no portable finer-grained equivalent here.
+        } catch (IOException e) {
+            throw new E2eeException("Cannot protect recovery-code staging file: " + target, e);
+        }
     }
     /**
      * Offline transport: fails closed until a later slice enrolls the device

@@ -11,8 +11,10 @@ import java.util.UUID;
  * Production {@link E2eeInitializer}: opens the local device (prompting
  * for the vault password interactively) and enrolls it with the current
  * session. Every failure degrades to plaintext-only with a console
- * warning; login and chat never depend on E2EE. Recovery codes from a
- * first-device bootstrap are printed once and never stored.
+ * warning; login and chat never depend on E2EE. First-device recovery
+ * codes are staged to a protected local file for the later Lanterna
+ * export flow and are never printed; a staging failure also degrades to
+ * plaintext-only without exposing the codes.
  */
 public final class E2eeStartupInitializer implements E2eeInitializer {
 
@@ -49,10 +51,14 @@ public final class E2eeStartupInitializer implements E2eeInitializer {
             runtime.close();
             return null;
         }
-        if (enrolled.recoveryCodesOrNull() != null) {
-            System.out.println("E2EE recovery codes (first device only, shown once — store them safely):");
-            for (String code : enrolled.recoveryCodesOrNull()) {
-                System.out.println("  " + code);
+        if (enrolled.recoveryCodesOrNull() != null && !enrolled.recoveryCodesOrNull().isEmpty()) {
+            try {
+                E2eeRuntimeFactory.stageRecoveryCodes(e2eeDir, enrolled.recoveryCodesOrNull());
+            } catch (RuntimeException e) {
+                System.out.println("Warning: E2EE recovery staging failed ("
+                        + safeMessage(e) + "). Plaintext only.");
+                runtime.close();
+                return null;
             }
         }
         if (enrolled.state() == E2eeEnrollmentState.ACTIVE && enrolled.sessionBound()) {
