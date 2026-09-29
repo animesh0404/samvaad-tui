@@ -44,7 +44,11 @@ Signal sessions, trust verdicts, and outbound/replay state: losing them
 across restarts would silently replace the device identity and make existing
 encrypted sessions unrecoverable.
 
-The original decision above is otherwise unchanged. In particular:
+The original decision above is otherwise unchanged. Authentication tokens, server session state, conversations, messages, and general application state remain non-persistent. Normal TUI exit does not revoke the server session; explicit logout remains server-authoritative.
+
+The current E2EE runtime also has a user-visible recovery-code staging/export lifecycle and an existing-device rebind flow. These are cryptographic/device lifecycle state, not a general-purpose application persistence layer.
+
+In particular:
 
 - Authentication tokens, session state, conversations, messages, friend
   state, and all UI state remain memory-only. The server remains the

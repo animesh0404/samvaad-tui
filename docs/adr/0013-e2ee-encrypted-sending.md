@@ -71,3 +71,12 @@ first contact encrypted is future work.
 - `E2eeMessageSender.disabled(reason)` keeps unreadiness explicit.
 - Replenishment, rotation, approval UI, recovery flows, and inbound
   processing belong to later slices.
+
+
+## Amendment (2026-09-29): inbound transport and recovery rebind
+
+The previously deferred inbound E2EE transport is now implemented in the TUI: mailbox fetch, acknowledgement, encrypted history reads, synchronization-cursor operations, local decryption/merge, and guarded background mailbox refresh are all part of the current runtime.
+
+The server recovery-rebind endpoint resolves the earlier adopted-device/session-binding limitation described above.
+
+The current UI still exposes the legacy plaintext send path separately. This is current implementation state, not the final E2EE-only product contract.

@@ -50,7 +50,7 @@ source for the consumed artifact is the library repository at tag
 
 ## TUI development
 
-Phase 3 established the Lanterna fullscreen shell. Phase 4 replaced preview data with server-backed conversation/message state. Phase 5 adds message sending and realtime delivery. Phase 6 adds exact user lookup and pending friend-request workflows. Phase 7 adds the authoritative Friends tab, start-chat workflow, automatic conversation discovery, and universal manual refresh.
+Phase 3 established the Lanterna fullscreen shell. Phase 4 replaced preview data with server-backed conversation/message state. Phase 5 adds message sending and realtime delivery. Phase 6 adds exact user lookup and pending friend-request workflows. Phase 7 adds the authoritative Friends tab, start-chat workflow, automatic conversation discovery, and universal manual refresh. Subsequent E2EE slices add device enrollment, recovery-code handling, encrypted sending, inbound mailbox/history synchronization, restart recovery, and existing-device rebind.
 
 Responsibilities:
 
@@ -134,6 +134,14 @@ STOMP SUBSCRIBE /topic/conversations/{conversationId}
 ```
 
 The same access JWT is used for authenticated HTTP and STOMP. The TUI does not generate server-owned message IDs, conversation IDs, sequence numbers, timestamps, sender identity, or friend-request IDs.
+
+## E2EE development state
+
+The TUI consumes io.github.animesh0404:e2ee-client:0.1.0 from Maven Central. The current E2EE runtime persists cryptographic state locally, stages first-enrollment recovery codes for explicit export, supports recovery rebind of an adopted ACTIVE server device, and processes encrypted mailbox/history data.
+
+The current messaging UI still exposes the legacy plaintext path separately from the encrypted path. E2EE does not fall back to plaintext. E2EE-only messaging, encrypted first-contact migration, and further recovery/rotation UX remain follow-up work.
+
+Normal TUI exit is non-revoking; only explicit logout calls the server logout endpoint. This distinction is part of lifecycle testing and must not be regressed.
 
 ## Testing approach
 

@@ -4,13 +4,13 @@ Thin Java terminal client for the existing Samvaad Server.
 
 ## Purpose
 
-Provide a clean, keyboard-driven terminal experience for login, direct conversations, message history, realtime messaging, exact username lookup, friend requests, Friends, starting chats from Friends, and logout.
+Provide a clean, keyboard-driven terminal experience for login, direct conversations, message history, realtime messaging, exact username lookup, friend requests, Friends, starting chats from Friends, E2EE device enrollment/recovery, encrypted messaging, mailbox/history synchronization, and logout.
 
 ## Scope / boundary
 
 Samvaad TUI is a **thin client**. The Samvaad Server remains authoritative for authentication, authorization, business rules, persistence, message identity, conversation identity, sequencing, timestamps, idempotency, friendship, and domain behavior.
 
-The TUI does not invent endpoints or server-owned identifiers, does not persist credentials/tokens to disk, and does not add a database, embedded server, broker, or offline-sync layer.
+The TUI does not invent endpoints or server-owned identifiers, does not persist authentication credentials/tokens to disk, and does not add a database, embedded server, broker, or general offline-sync layer. E2EE cryptographic identity/session state is intentionally persisted locally through the reusable E2EE client library.
 
 Verified server/realtime contracts include authenticated HTTP, `GET /api/conversations/direct?limit&offset`, message history, the direct first-message REST operation, exact user lookup, friend-request operations, `GET /api/friends`, and WebSocket `/ws` with STOMP `/app/chat.send` and `/topic/conversations/{conversationId}`.
 
@@ -26,13 +26,13 @@ Verified server/realtime contracts include authenticated HTTP, `GET /api/convers
 ./gradlew build
 ./gradlew test
 ./gradlew installDist
-build/install/samvaad-tui/bin/samvaad-tui --server http://localhost:8080 --username alice
+build/install/samvaad-tui/bin/samvaad-tui --server https://localhost:8080 --username alice
 ```
 
 The build also produces a self-contained fat JAR with all runtime dependencies:
 
 ```text
-java -jar build/libs/samvaad-tui.jar --server http://localhost:8080 --username alice
+java -jar build/libs/samvaad-tui.jar --server https://localhost:8080 --username alice
 ```
 
 Windows 11 is supported: the fat JAR bundles Lanterna's native Windows backend
@@ -71,6 +71,16 @@ Successful list reconciliation preserves the selected conversation by `conversat
 - Search → existing exact-username lookup action
 
 F5 is asynchronous, does not restart the TUI, and does not steal selection/focus. Existing `g` refresh behavior remains available in Friends and request views.
+
+## E2EE
+
+The current client implements persistent local E2EE device identity and cryptographic state, first-device enrollment, recovery-code staging/export, existing-device recovery rebind, encrypted outbound messaging, encrypted mailbox/history synchronization, and restart recovery through the extracted E2EE client library.
+
+First enrollment returns one-time recovery codes which are staged locally until the user explicitly exports them. An adopted ACTIVE device that is not bound to the current server session can be rebound at startup with one recovery code; successful rebind restores encrypted send/inbox capability without creating a second device identity.
+
+The current build still exposes the legacy plaintext direct-message path alongside the encrypted path. E2EE sending is currently selected explicitly in the UI and does not fall back to plaintext. Making E2EE the only messaging path is a subsequent product/implementation change; this documentation describes the current implementation rather than that future state.
+
+Normal TUI exit does not revoke the server session. Explicit logout remains the revocation action.
 
 ## Keyboard shortcuts
 
@@ -116,6 +126,7 @@ The UI does not construct HTTP requests or STOMP frames directly. `TuiApp` owns 
 - Phase 7A — Server Friends API: **done**
 - Phase 7B — Friends tab/start chat: **done**
 - Phase 7C — Automatic conversation discovery + universal F5 refresh: **done** (`72968725da0046c445598759c6fd613169d27bb7`)
+- E2EE device enrollment/recovery, encrypted sending, inbound mailbox/history sync, restart recovery, and recovery rebind: **implemented**
 
 Phase 7C verification: **271 tests passing**, zero failures/errors/skips, and `./gradlew installDist` succeeds.
 
@@ -127,4 +138,4 @@ Interactive fullscreen smoke testing is a manual real-terminal responsibility; t
 
 ## Authentication
 
-Login is `POST /api/auth/login` with `clientPlatform: TUI`; the server returns access/refresh tokens, expiry, and session ID. The client uses the access JWT for authenticated HTTP and realtime. `installationId` is optional metadata and is not manufactured by the TUI. Logout calls the server revocation endpoint before local session cleanup.
+Login is `POST /api/auth/login` with `clientPlatform: TUI`; the server returns access/refresh tokens, expiry, and session ID. The client uses the access JWT for authenticated HTTP and realtime. `installationId` is optional metadata and is not manufactured by the TUI. Normal exit disconnects realtime but does not call server logout; explicit logout calls the server revocation endpoint before local session cleanup.

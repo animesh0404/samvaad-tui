@@ -127,7 +127,15 @@ The manager subscribes to `/topic/conversations/{conversationId}` and sends to `
 
 ## Authentication/session flow
 
-Login establishes the in-memory authenticated session, conversation state, realtime manager, and token-free social service. Realtime disconnect occurs before HTTP logout. The same server-issued access JWT is used for authenticated HTTP and realtime operations.
+Login establishes the in-memory authenticated session, conversation state, realtime manager, and token-free social service. Normal termination disconnects realtime without revoking the server session. Explicit logout performs server revocation. The same server-issued access JWT is used for authenticated HTTP and realtime operations.
+
+## E2EE architecture
+
+The E2EE boundary is separate from the server-authoritative messaging/realtime boundary. E2eeStartupInitializer coordinates device enrollment/adoption/rebind; E2eeMessageApiClient and E2eeDeviceApiClient consume the server E2EE API; SamvaadCryptoService delegates cryptography to the extracted e2ee-client library; and E2eeInboxProcessor decrypts and merges mailbox/history ciphertext locally.
+
+The local E2EE store is intentionally durable because cryptographic device identity and ratchet state cannot be regenerated safely across restarts. Authentication tokens remain memory-only. First-device recovery codes are staged separately and removed only after successful export. An adopted ACTIVE device can use a recovery code to bind the current server session to the existing server device without creating a new cryptographic identity.
+
+The current implementation still contains the legacy plaintext messaging path as a separate path. The E2EE path never silently falls back to plaintext. Normal TUI termination preserves the server session; explicit logout is the revocation path.
 
 ## Error handling
 
@@ -138,7 +146,7 @@ The API layer avoids exposing credentials or sensitive response bodies. Social a
 1. Server authority over client duplication.
 2. Explicit boundaries over framework-heavy abstraction.
 3. Small, intentional client-side state.
-4. In-memory authentication state until a concrete persistence requirement exists.
+4. Authentication tokens remain in memory; E2EE cryptographic state is the deliberate local-persistence exception defined by the E2EE ADRs.
 5. Protocol details isolated inside API/realtime layers.
 6. UI independent of transport implementation.
 7. Implement only against verified server contracts.

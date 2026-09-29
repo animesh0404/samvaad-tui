@@ -64,7 +64,7 @@ A successful response replaces the current authentication session with the lates
 
 Logout uses `POST /api/auth/logout` with `Authorization: Bearer <access-token>`.
 
-After successful login, the TUI shell runs with display context only; raw access and refresh tokens remain in the session/bootstrap/realtime layers. Exiting the TUI disconnects realtime first, then bootstrap calls server logout and clears local authenticated state. Local cleanup is therefore not a substitute for server logout.
+After successful login, the TUI shell runs with display context only; raw access and refresh tokens remain in the session/bootstrap/realtime layers. Normal TUI exit disconnects realtime and clears only in-memory runtime state; it does not call server logout, so the server session remains available until expiry or explicit revocation. Explicit logout disconnects realtime, calls POST /api/auth/logout, and clears local authenticated state.
 
 ## Conversation, social HTTP, and realtime authentication
 
@@ -116,7 +116,8 @@ Realtime destinations remain:
 - Passwords and tokens must never be logged or printed.
 - Error handling must not expose sensitive response bodies.
 - Access and refresh tokens are held in memory only.
-- Credentials and tokens are not persisted locally.
+- Credentials and authentication tokens are not persisted locally.
+- E2EE cryptographic identity/session material is persisted separately in the local E2EE data directory; this is not authentication-token persistence.
 - The Lanterna UI must not receive or render authentication tokens.
 - The realtime transport must not expose credentials through user-facing notices.
 - Social API seams must expose model operations rather than raw access tokens.
@@ -124,7 +125,7 @@ Realtime destinations remain:
 
 ## Current limitations
 
-Authentication currently has no persistent credentials, persistent tokens, background refresh, multi-account storage, offline authentication, or device/installation identity generation. Phase 7 does not change authentication semantics.
+Authentication currently has no persistent credentials, persistent authentication tokens, background refresh, multi-account storage, or offline authentication. The TUI does persist its E2EE device identity/crypto state through the E2EE library, but that state is not a server-authentication credential. The current launcher still receives the account username through CLI configuration rather than deriving it from a persisted authentication session.
 
 The current realtime error contract does not use a client-subscribed `/user/queue/errors` destination because that wiring was not established as part of the verified server contract. Transport ERROR/session callbacks are used instead.
 

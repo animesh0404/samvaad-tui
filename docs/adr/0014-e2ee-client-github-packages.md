@@ -4,6 +4,10 @@
 - Date: 2026-09-27
 - Amended: 2026-09-28
 
+## Current state
+
+The historical GitHub Packages decision below is retained for provenance only. The final and current dependency is Maven Central: io.github.animesh0404:e2ee-client:0.1.0. No GitHub Packages credentials, repository, or sibling checkout are required by the current TUI build.
+
 ## Context
 
 The TUI consumed the reusable JVM E2EE client library

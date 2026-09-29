@@ -67,3 +67,17 @@ anywhere (not in the vault, not in metadata, not in logs).
 - No JWT persistence: the existing access token is borrowed per call.
 - Replenishment below the policy threshold, Kyber rotation, approval UI,
   and recovery-code flows belong to later slices.
+
+
+## Amendment (2026-09-29): recovery-code export and existing-device rebind
+
+The recovery lifecycle is now implemented beyond initial enrollment.
+
+- First-device enrollment returns 25 one-time recovery codes. The TUI stages them under its E2EE data directory with restrictive file permissions rather than storing them in device metadata, the vault, logs, or normal application state.
+- The staged codes are removed only after the user successfully exports them through the TUI recovery-code panel. Export refuses an existing destination or missing parent directory.
+- On a later launch, if the locally adopted server device is ACTIVE but the current authenticated server session is not bound to that device, the TUI prompts once for a recovery code and calls POST /api/e2ee/devices/{deviceId}/bind.
+- A successful rebind records the session/device association only after the server confirms the bind. Failed or blank recovery input leaves E2EE unavailable for that launch rather than fabricating a bound state.
+- The server-side rebind operation consumes the recovery code and binds the session atomically; it does not create a new device identity.
+- Normal TUI exit preserves the server session and local device identity. Explicit logout remains the normal client action that revokes the server session.
+
+This amendment records implemented behavior; it does not yet make E2EE the only messaging path.
