@@ -6,7 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.samvaad.tui.api.dto.AckMailboxResponse;
 import com.samvaad.tui.api.dto.ClaimPrekeyResponse;
+import com.samvaad.tui.api.dto.E2eeCiphertextItem;
+import com.samvaad.tui.api.dto.SyncCursorResponse;
 import com.samvaad.tui.api.dto.RecipientDeviceResponse;
 import com.samvaad.tui.api.dto.SubmitE2eeMessageRequest;
 import com.samvaad.tui.api.dto.SubmitE2eeMessageResponse;
@@ -176,6 +179,189 @@ class E2eeMessageApiClientTest {
 
         assertThrows(SamvaadApiException.class, () -> client.submitMessage(BASE_URL, TOKEN,
                 new SubmitE2eeMessageRequest(UUID.randomUUID(), List.of())));
+    }
+
+    @Test
+    void mailboxFetchesPendingEnvelopes() throws Exception {
+        UUID messageId = UUID.randomUUID();
+        UUID conversationId = UUID.randomUUID();
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, "[" + ciphertextJson(messageId, conversationId, 9L) + "]");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+
+        List<E2eeCiphertextItem> items = client.fetchMailbox(BASE_URL, TOKEN, 50);
+
+        assertEquals(1, items.size());
+        assertEquals(messageId, items.get(0).messageId());
+        assertEquals(conversationId, items.get(0).conversationId());
+        assertEquals(9L, items.get(0).sequenceNumber());
+        assertEquals("PREKEY_INIT", items.get(0).envelopeType());
+        assertEquals(KEY_B64, items.get(0).ciphertext());
+        assertEquals("/api/e2ee/mailbox?limit=50", transport.lastCall().path());
+        assertEquals(TOKEN, transport.lastCall().bearerToken());
+    }
+
+    @Test
+    void mailboxEmptyWhenNothingPending() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, "[]");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+
+        assertTrue(client.fetchMailbox(BASE_URL, TOKEN, 50).isEmpty());
+    }
+
+    @Test
+    void mailboxAuthenticationFailed() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(401, "nope");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+
+        SamvaadApiException e = assertThrows(SamvaadApiException.class,
+                () -> client.fetchMailbox(BASE_URL, TOKEN, 50));
+        assertEquals(SamvaadApiException.Kind.AUTHENTICATION_FAILED, e.kind());
+    }
+
+    @Test
+    void mailboxMalformedItem() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, "[{\"messageId\":null}]");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+
+        assertThrows(SamvaadApiException.class, () -> client.fetchMailbox(BASE_URL, TOKEN, 50));
+    }
+
+    @Test
+    void acknowledgeRemovesMailboxPointers() throws Exception {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, "{\"acknowledged\":2}");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+
+        AckMailboxResponse response =
+                client.acknowledgeMailbox(BASE_URL, TOKEN, List.of(first, second));
+
+        assertEquals(2, response.acknowledged());
+        assertEquals("/api/e2ee/mailbox/ack", transport.lastCall().path());
+        Map<?, ?> body = new ObjectMapper().readValue(transport.lastCall().body(), Map.class);
+        assertEquals(List.of(first.toString(), second.toString()), body.get("messageIds"));
+    }
+
+    @Test
+    void acknowledgeIdempotentReplay() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, "{\"acknowledged\":0}");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+
+        AckMailboxResponse response =
+                client.acknowledgeMailbox(BASE_URL, TOKEN, List.of(UUID.randomUUID()));
+
+        assertEquals(0, response.acknowledged());
+    }
+
+    @Test
+    void acknowledgeMalformedResponse() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, "null");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+
+        assertThrows(SamvaadApiException.class, () -> client.acknowledgeMailbox(
+                BASE_URL, TOKEN, List.of(UUID.randomUUID())));
+    }
+
+    @Test
+    void historyReadsDurableEnvelopes() {
+        UUID conversationId = UUID.randomUUID();
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200,
+                "[" + ciphertextJson(UUID.randomUUID(), conversationId, 4L) + "]");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+
+        List<E2eeCiphertextItem> items =
+                client.fetchHistory(BASE_URL, TOKEN, conversationId, 3L, 20);
+
+        assertEquals(1, items.size());
+        assertEquals(4L, items.get(0).sequenceNumber());
+        assertEquals("/api/e2ee/conversations/" + conversationId
+                + "/messages?afterSequence=3&limit=20", transport.lastCall().path());
+        assertEquals(TOKEN, transport.lastCall().bearerToken());
+    }
+
+    @Test
+    void historyUnknownConversation() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(404, "gone");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+
+        SamvaadApiException e = assertThrows(SamvaadApiException.class, () -> client.fetchHistory(
+                BASE_URL, TOKEN, UUID.randomUUID(), 0L, 20));
+        assertEquals(SamvaadApiException.Kind.NOT_FOUND, e.kind());
+    }
+
+    @Test
+    void advanceCursorSendsMonotonicPosition() throws Exception {
+        UUID conversationId = UUID.randomUUID();
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, "{\"conversationId\":\"" + conversationId
+                + "\",\"throughSequence\":9}");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+
+        SyncCursorResponse cursor = client.advanceCursor(BASE_URL, TOKEN, conversationId, 9L);
+
+        assertEquals(conversationId, cursor.conversationId());
+        assertEquals(9L, cursor.throughSequence());
+        assertEquals("/api/e2ee/sync", transport.lastCall().path());
+        Map<?, ?> body = new ObjectMapper().readValue(transport.lastCall().body(), Map.class);
+        assertEquals(conversationId.toString(), body.get("conversationId"));
+        assertEquals(9, body.get("throughSequence"));
+    }
+
+    @Test
+    void advanceCursorBackwardsMoveIsConflict() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(409, "backwards");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+
+        SamvaadApiException e = assertThrows(SamvaadApiException.class, () -> client.advanceCursor(
+                BASE_URL, TOKEN, UUID.randomUUID(), 2L));
+        assertEquals(SamvaadApiException.Kind.CONFLICT, e.kind());
+    }
+
+    @Test
+    void readCursorReturnsStoredPosition() {
+        UUID conversationId = UUID.randomUUID();
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, "{\"conversationId\":\"" + conversationId
+                + "\",\"throughSequence\":5}");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+
+        SyncCursorResponse cursor = client.readCursor(BASE_URL, TOKEN, conversationId);
+
+        assertEquals(conversationId, cursor.conversationId());
+        assertEquals(5L, cursor.throughSequence());
+        assertEquals("/api/e2ee/sync?conversationId=" + conversationId,
+                transport.lastCall().path());
+    }
+
+    @Test
+    void readCursorMalformedResponse() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, "{\"conversationId\":null}");
+        E2eeMessageApiClient client = new E2eeMessageApiClient(transport);
+
+        assertThrows(SamvaadApiException.class,
+                () -> client.readCursor(BASE_URL, TOKEN, UUID.randomUUID()));
+    }
+
+    private static String ciphertextJson(UUID messageId, UUID conversationId, long sequence) {
+        return "{\"messageId\":\"" + messageId + "\","
+                + "\"conversationId\":\"" + conversationId + "\","
+                + "\"sequenceNumber\":" + sequence + ","
+                + "\"senderUserId\":\"" + UUID.randomUUID() + "\","
+                + "\"senderDeviceId\":\"" + DEVICE_A + "\","
+                + "\"envelopeType\":\"PREKEY_INIT\","
+                + "\"ciphertext\":\"" + KEY_B64 + "\","
+                + "\"serverTimestamp\":\"2026-09-27T10:00:00\"}";
     }
 
     private static String directoryJson(UUID deviceId, boolean hasOtpk) {

@@ -6,7 +6,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.samvaad.tui.api.dto.ClaimPrekeyRequest;
 import com.samvaad.tui.api.dto.ClaimPrekeyResponse;
+import com.samvaad.tui.api.dto.AckMailboxRequest;
+import com.samvaad.tui.api.dto.AckMailboxResponse;
+import com.samvaad.tui.api.dto.E2eeCiphertextItem;
 import com.samvaad.tui.api.dto.RecipientDeviceResponse;
+import com.samvaad.tui.api.dto.SyncCursorRequest;
+import com.samvaad.tui.api.dto.SyncCursorResponse;
 import com.samvaad.tui.api.dto.SubmitE2eeMessageRequest;
 import com.samvaad.tui.api.dto.SubmitE2eeMessageResponse;
 import java.net.URLEncoder;
@@ -19,10 +24,15 @@ import java.util.UUID;
  *
  * <p>Implements the verified ciphertext-transport contract:
  * {@code GET /api/e2ee/users/{username}/devices} (recipient directory),
- * {@code POST /api/e2ee/devices/{deviceId}/one-time-prekeys/claim}, and
+ * {@code POST /api/e2ee/devices/{deviceId}/one-time-prekeys/claim},
  * {@code POST /api/e2ee/messages} (accepts 201 created or 200 idempotent
- * replay). The server receives ciphertext only; this client never sends
- * plaintext message content.
+ * replay), {@code GET /api/e2ee/mailbox} (pending envelopes for the
+ * session-bound device), {@code POST /api/e2ee/mailbox/ack},
+ * {@code GET /api/e2ee/conversations/{id}/messages} (durable per-device
+ * history), and {@code PUT}/{@code GET /api/e2ee/sync} (per-device sync
+ * cursor). The server receives ciphertext only; this client never sends
+ * plaintext message content. There is no STOMP delivery of ciphertext:
+ * inbound envelopes are retrieved through these HTTP endpoints.
  *
  * <p>Transport only: no key generation, no sessions, no private material.
  * The access token is borrowed per call and never persisted.
@@ -164,8 +174,190 @@ public final class E2eeMessageApiClient {
         return response;
     }
 
-    private static void throwIfE2eeError(HttpResult result, String operation) {
-        switch (result.statusCode()) {
+    /**
+     * Fetches pending ciphertext envelopes for the session-bound device,
+     * oldest first. Fetching never advances the sync cursor and never
+     * removes anything; removal happens only through
+     * {@link #acknowledgeMailbox}.
+     *
+     * @param limit maximum items (server default 50)
+     * @throws SamvaadApiException on authentication, transport, HTTP, or
+     *         parse failure
+     */
+    public List<E2eeCiphertextItem> fetchMailbox(String baseUrl, String accessToken, int limit) {
+        String path = "/api/e2ee/mailbox?limit=" + limit;
+        HttpResult result = transport.get(baseUrl, path, accessToken);
+        if (result.statusCode() == 401) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.AUTHENTICATION_FAILED, 401,
+                    "Loading E2EE mailbox failed: authentication failed. Please log in again.");
+        }
+        throwIfE2eeError(result, "Loading E2EE mailbox");
+        if (!isSuccess(result.statusCode())) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.HTTP_ERROR, result.statusCode(),
+                    "Loading E2EE mailbox failed (HTTP " + result.statusCode() + ").");
+        }
+        return parseCiphertextItems(result.body(), "Loading E2EE mailbox");
+    }
+
+    /**
+     * Acknowledges mailbox items after local processing. Deletes only the
+     * bound device's mailbox pointers; durable history is retained.
+     * Idempotent: re-acknowledging removes nothing and still succeeds.
+     *
+     * @throws SamvaadApiException on authentication, transport, HTTP, or
+     *         parse failure
+     */
+    public AckMailboxResponse acknowledgeMailbox(
+            String baseUrl, String accessToken, List<UUID> messageIds) {
+        String body;
+        try {
+            body = mapper.writeValueAsString(new AckMailboxRequest(messageIds));
+        } catch (JsonProcessingException e) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.HTTP_ERROR, -1,
+                    "Acknowledging E2EE mailbox failed: cannot build request.", e);
+        }
+        HttpResult result = transport.post(baseUrl, "/api/e2ee/mailbox/ack", body, accessToken);
+        if (result.statusCode() == 401) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.AUTHENTICATION_FAILED, 401,
+                    "Acknowledging E2EE mailbox failed: authentication failed. Please log in again.");
+        }
+        throwIfE2eeError(result, "Acknowledging E2EE mailbox");
+        if (!isSuccess(result.statusCode())) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.HTTP_ERROR, result.statusCode(),
+                    "Acknowledging E2EE mailbox failed (HTTP " + result.statusCode() + ").");
+        }
+        AckMailboxResponse response;
+        try {
+            response = mapper.readValue(result.body(), AckMailboxResponse.class);
+        } catch (JsonProcessingException | IllegalArgumentException e) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.MALFORMED_RESPONSE, -1,
+                    "Acknowledging E2EE mailbox failed: malformed server response.", e);
+        }
+        if (response == null) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.MALFORMED_RESPONSE, -1,
+                    "Acknowledging E2EE mailbox failed: malformed server response.");
+        }
+        return response;
+    }
+
+    /**
+     * Reads durable per-device ciphertext history for one conversation.
+     * Remains readable after acknowledgement; scoped to envelopes
+     * addressed to the session-bound device.
+     *
+     * @param afterSequence only items above this sequence ({@code >= 0})
+     * @param limit maximum items (server default 20)
+     * @throws SamvaadApiException on authentication, transport, HTTP, or
+     *         parse failure
+     */
+    public List<E2eeCiphertextItem> fetchHistory(
+            String baseUrl, String accessToken, UUID conversationId, long afterSequence, int limit) {
+        String path = "/api/e2ee/conversations/" + conversationId
+                + "/messages?afterSequence=" + afterSequence + "&limit=" + limit;
+        HttpResult result = transport.get(baseUrl, path, accessToken);
+        if (result.statusCode() == 401) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.AUTHENTICATION_FAILED, 401,
+                    "Loading E2EE history failed: authentication failed. Please log in again.");
+        }
+        throwIfE2eeError(result, "Loading E2EE history");
+        if (!isSuccess(result.statusCode())) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.HTTP_ERROR, result.statusCode(),
+                    "Loading E2EE history failed (HTTP " + result.statusCode() + ").");
+        }
+        return parseCiphertextItems(result.body(), "Loading E2EE history");
+    }
+
+    /**
+     * Advances the bound device's sync cursor for one conversation.
+     * Monotonic: repeats are safe, backwards moves are rejected by the
+     * server (409 conflict). Independent of mailbox fetch/ack.
+     *
+     * @throws SamvaadApiException on authentication, conflict, transport,
+     *         HTTP, or parse failure
+     */
+    public SyncCursorResponse advanceCursor(
+            String baseUrl, String accessToken, UUID conversationId, long throughSequence) {
+        String body;
+        try {
+            body = mapper.writeValueAsString(new SyncCursorRequest(conversationId, throughSequence));
+        } catch (JsonProcessingException e) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.HTTP_ERROR, -1,
+                    "Advancing E2EE sync cursor failed: cannot build request.", e);
+        }
+        HttpResult result = transport.put(baseUrl, "/api/e2ee/sync", body, accessToken);
+        if (result.statusCode() == 401) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.AUTHENTICATION_FAILED, 401,
+                    "Advancing E2EE sync cursor failed: authentication failed. Please log in again.");
+        }
+        throwIfE2eeError(result, "Advancing E2EE sync cursor");
+        if (!isSuccess(result.statusCode())) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.HTTP_ERROR, result.statusCode(),
+                    "Advancing E2EE sync cursor failed (HTTP " + result.statusCode() + ").");
+        }
+        return parseCursor(result.body(), "Advancing E2EE sync cursor");
+    }
+
+    /**
+     * Reads the bound device's sync cursor for one conversation
+     * ({@code throughSequence} 0 when never advanced).
+     *
+     * @throws SamvaadApiException on authentication, transport, HTTP, or
+     *         parse failure
+     */
+    public SyncCursorResponse readCursor(String baseUrl, String accessToken, UUID conversationId) {
+        String path = "/api/e2ee/sync?conversationId=" + conversationId;
+        HttpResult result = transport.get(baseUrl, path, accessToken);
+        if (result.statusCode() == 401) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.AUTHENTICATION_FAILED, 401,
+                    "Reading E2EE sync cursor failed: authentication failed. Please log in again.");
+        }
+        throwIfE2eeError(result, "Reading E2EE sync cursor");
+        if (!isSuccess(result.statusCode())) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.HTTP_ERROR, result.statusCode(),
+                    "Reading E2EE sync cursor failed (HTTP " + result.statusCode() + ").");
+        }
+        return parseCursor(result.body(), "Reading E2EE sync cursor");
+    }
+
+    private List<E2eeCiphertextItem> parseCiphertextItems(String body, String operation) {
+        List<E2eeCiphertextItem> items;
+        try {
+            items = mapper.readValue(body, new TypeReference<List<E2eeCiphertextItem>>() { });
+        } catch (JsonProcessingException | IllegalArgumentException e) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.MALFORMED_RESPONSE, -1,
+                    operation + " failed: malformed server response.", e);
+        }
+        if (items == null) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.MALFORMED_RESPONSE, -1,
+                    operation + " failed: malformed server response.");
+        }
+        for (E2eeCiphertextItem item : items) {
+            if (item == null || item.messageId() == null || item.conversationId() == null
+                    || item.senderDeviceId() == null
+                    || isBlank(item.envelopeType()) || isBlank(item.ciphertext())) {
+                throw new SamvaadApiException(SamvaadApiException.Kind.MALFORMED_RESPONSE, -1,
+                        operation + " failed: malformed server response.");
+            }
+        }
+        return items;
+    }
+
+    private SyncCursorResponse parseCursor(String body, String operation) {
+        SyncCursorResponse cursor;
+        try {
+            cursor = mapper.readValue(body, SyncCursorResponse.class);
+        } catch (JsonProcessingException | IllegalArgumentException e) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.MALFORMED_RESPONSE, -1,
+                    operation + " failed: malformed server response.", e);
+        }
+        if (cursor == null || cursor.conversationId() == null) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.MALFORMED_RESPONSE, -1,
+                    operation + " failed: malformed server response.");
+        }
+        return cursor;
+    }
+
+    private static void throwIfE2eeError(HttpResult result, String operation) {        switch (result.statusCode()) {
             case 400 -> throw new SamvaadApiException(SamvaadApiException.Kind.INVALID_REQUEST,
                     400, operation + " failed: invalid request.");
             case 403 -> throw new SamvaadApiException(SamvaadApiException.Kind.FORBIDDEN,
