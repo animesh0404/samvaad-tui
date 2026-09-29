@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.samvaad.tui.api.dto.DeviceListResponse;
+import com.samvaad.tui.api.dto.BindDeviceRequest;
 import com.samvaad.tui.api.dto.E2eeDeviceResponse;
 import com.samvaad.tui.api.dto.EnrollDeviceRequest;
 import com.samvaad.tui.api.dto.EnrollDeviceResponse;
@@ -14,8 +15,11 @@ import java.util.UUID;
  * E2EE device endpoints of the Samvaad Server API.
  *
  * <p>Implements only the verified enrollment/provisioning contract:
- * {@code POST /api/e2ee/devices}, {@code GET /api/e2ee/devices}, and
- * {@code PUT /api/e2ee/devices/{deviceId}/one-time-prekeys}. The last-resort
+ * {@code POST /api/e2ee/devices}, {@code GET /api/e2ee/devices},
+ * {@code PUT /api/e2ee/devices/{deviceId}/one-time-prekeys}, and
+ * {@code POST /api/e2ee/devices/{deviceId}/bind} (recovery-code-gated
+ * rebind of the caller's session to an already-enrolled ACTIVE device;
+ * no new device is created). The last-resort
  * Kyber triple is provisioned atomically inside enrollment, so no separate
  * Kyber call exists in this slice.
  *
@@ -125,6 +129,42 @@ public final class E2eeDeviceApiClient {
         if (response.deviceId() == null || isBlank(response.status())) {
             throw new SamvaadApiException(SamvaadApiException.Kind.MALFORMED_RESPONSE, -1,
                     "Prekey upload failed: malformed server response.");
+        }
+        return response;
+    }
+
+    /**
+     * Binds the caller's current session to an already-enrolled ACTIVE
+     * device using one recovery code. The server consumes the code
+     * atomically with the bind; no new device is created and no key
+     * material is sent. Transport only: no prompting, no local metadata
+     * changes, no E2EE startup here.
+     *
+     * @param recoveryCode single usable recovery code (never logged)
+     * @return the rebound server device record
+     * @throws SamvaadApiException on authentication, forbidden (wrong
+     *         code), unknown device, conflicting session/device state,
+     *         transport, HTTP, or parse failure
+     */
+    public E2eeDeviceResponse bindDevice(
+            String baseUrl, String accessToken, UUID serverDeviceId, String recoveryCode) {
+        String body = writeBody(new BindDeviceRequest(recoveryCode), "Rebind");
+        HttpResult result = transport.post(
+                baseUrl, ENROLL_PATH + "/" + serverDeviceId + "/bind", body, accessToken);
+        if (result.statusCode() == 401) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.AUTHENTICATION_FAILED, 401,
+                    "Rebind failed: authentication failed. Please log in again.");
+        }
+        throwIfE2eeError(result, "Rebind");
+        if (!isSuccess(result.statusCode())) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.HTTP_ERROR, result.statusCode(),
+                    "Rebind failed (HTTP " + result.statusCode() + ").");
+        }
+        E2eeDeviceResponse response =
+                parseBody(result.body(), E2eeDeviceResponse.class, "Rebind");
+        if (response.deviceId() == null || isBlank(response.status())) {
+            throw new SamvaadApiException(SamvaadApiException.Kind.MALFORMED_RESPONSE, -1,
+                    "Rebind failed: malformed server response.");
         }
         return response;
     }

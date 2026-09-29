@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.samvaad.tui.api.dto.DeviceListResponse;
+import com.samvaad.tui.api.dto.E2eeDeviceResponse;
 import com.samvaad.tui.api.dto.EnrollDeviceRequest;
 import com.samvaad.tui.api.dto.EnrollDeviceResponse;
 import com.samvaad.tui.api.dto.OneTimePrekeyRequest;
@@ -220,6 +221,88 @@ public class E2eeDeviceApiClientTest {
      * Shared server-device JSON builder for enrollment tests in other
      * packages. Field names mirror the verified server contract.
      */
+    @Test
+    void bindPostsRecoveryCodeOnlyAndParsesDevice() throws Exception {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, deviceJson(DEVICE_ID, "ACTIVE", 0));
+        E2eeDeviceApiClient client = new E2eeDeviceApiClient(transport);
+
+        E2eeDeviceResponse response =
+                client.bindDevice(BASE_URL, TOKEN, DEVICE_ID, "code-one");
+
+        assertEquals(DEVICE_ID, response.deviceId());
+        assertEquals("ACTIVE", response.status());
+        FakeHttpTransport.Call call = transport.lastCall();
+        assertEquals("/api/e2ee/devices/" + DEVICE_ID + "/bind", call.path());
+        assertEquals(TOKEN, call.bearerToken());
+        Map<?, ?> body = new ObjectMapper().readValue(call.body(), Map.class);
+        assertEquals(Map.of("recoveryCode", "code-one"), body);
+        for (String forbidden : List.of("privateKey", "identityPublicKey", "signedPrekey",
+                "oneTimePrekey", "kyberPrekey", "ciphertext", "vault", "password")) {
+            assertTrue(!call.body().contains(forbidden),
+                    "bind request must not carry " + forbidden);
+        }
+    }
+
+    @Test
+    void bindWritesNothingToStdoutOrStderr() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, deviceJson(DEVICE_ID, "ACTIVE", 0));
+        E2eeDeviceApiClient client = new E2eeDeviceApiClient(transport);
+        java.io.PrintStream out = System.out;
+        java.io.PrintStream err = System.err;
+        java.io.ByteArrayOutputStream captured = new java.io.ByteArrayOutputStream();
+        System.setOut(new java.io.PrintStream(captured));
+        System.setErr(new java.io.PrintStream(captured));
+        try {
+            client.bindDevice(BASE_URL, TOKEN, DEVICE_ID, "code-one");
+        } finally {
+            System.setOut(out);
+            System.setErr(err);
+        }
+        assertTrue(captured.toString().isEmpty(), "bind must not print the recovery code");
+    }
+
+    @Test
+    void bindAuthFailure() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(401, "nope");
+        E2eeDeviceApiClient client = new E2eeDeviceApiClient(transport);
+
+        SamvaadApiException e = assertThrows(SamvaadApiException.class,
+                () -> client.bindDevice(BASE_URL, TOKEN, DEVICE_ID, "code-one"));
+        assertEquals(SamvaadApiException.Kind.AUTHENTICATION_FAILED, e.kind());
+    }
+
+    @Test
+    void bindMapsServerErrors() {
+        int[] statuses = {400, 403, 404, 409};
+        SamvaadApiException.Kind[] kinds = {
+                SamvaadApiException.Kind.INVALID_REQUEST,
+                SamvaadApiException.Kind.FORBIDDEN,
+                SamvaadApiException.Kind.NOT_FOUND,
+                SamvaadApiException.Kind.CONFLICT};
+        for (int i = 0; i < statuses.length; i++) {
+            FakeHttpTransport transport = new FakeHttpTransport();
+            transport.addJson(statuses[i], "nope");
+            E2eeDeviceApiClient client = new E2eeDeviceApiClient(transport);
+
+            SamvaadApiException e = assertThrows(SamvaadApiException.class,
+                    () -> client.bindDevice(BASE_URL, TOKEN, DEVICE_ID, "code-one"));
+            assertEquals(kinds[i], e.kind());
+        }
+    }
+
+    @Test
+    void bindMalformedResponse() {
+        FakeHttpTransport transport = new FakeHttpTransport();
+        transport.addJson(200, "{\"deviceId\":null}");
+        E2eeDeviceApiClient client = new E2eeDeviceApiClient(transport);
+
+        assertThrows(SamvaadApiException.class,
+                () -> client.bindDevice(BASE_URL, TOKEN, DEVICE_ID, "code-one"));
+    }
+
     public static String deviceJson(UUID deviceId, String status, long available) {
         return deviceJson(deviceId, 321, IDENTITY_B64, status, available);
     }
